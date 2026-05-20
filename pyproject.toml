@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
   "hotdata-runtime>=0.1.1",
+  "hotdata>=0.2.0",
   "langchain-core>=0.3.0",
 ]
 
