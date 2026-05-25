@@ -22,8 +22,14 @@ def result_rows_for_llm(result: QueryResult, *, max_rows: int = 20) -> list[dict
     return result.to_records(max_rows=max_rows)
 
 
-def execute_sql_json(client: HotdataClient, sql: str, *, max_rows: int = 100) -> str:
-    result = client.execute_sql(sql)
+def execute_sql_json(
+    client: HotdataClient,
+    sql: str,
+    *,
+    max_rows: int = 100,
+    database: str | None = None,
+) -> str:
+    result = client.execute_sql(sql, database=database)
     payload = {
         "metadata": result.metadata_dict(),
         "rows": result.to_records(max_rows=max_rows),
@@ -35,12 +41,13 @@ def make_hotdata_tools(
     client: HotdataClient,
     *,
     max_rows: int = 100,
+    database: str | None = None,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and managed database workflows."""
 
     def hotdata_execute_sql(sql: str) -> str:
         """Run SQL against the Hotdata workspace and return JSON rows."""
-        return execute_sql_json(client, sql, max_rows=max_rows)
+        return execute_sql_json(client, sql, max_rows=max_rows, database=database)
 
     def hotdata_list_managed_databases() -> str:
         """List Hotdata-managed databases in the workspace."""

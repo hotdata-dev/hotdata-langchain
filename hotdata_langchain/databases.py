@@ -16,9 +16,9 @@ from hotdata_runtime import (
 def list_managed_databases_json(client: HotdataClient) -> str:
     rows = [
         {
-            "name": db.name,
+            "description": db.description,
             "id": db.id,
-            "sql_prefix": f"{db.name}.{{schema}}.{{table}}",
+            "sql_prefix": f"{db.id}.{{schema}}.{{table}}",
         }
         for db in client.list_managed_databases()
     ]
@@ -32,7 +32,7 @@ def create_managed_database(
     schema: str = DEFAULT_SCHEMA,
     tables: list[str] | None = None,
 ) -> ManagedDatabase:
-    return client.create_managed_database(name, schema=schema, tables=tables)
+    return client.create_managed_database(description=name, schema=schema, tables=tables)
 
 
 def load_managed_table(
@@ -47,7 +47,7 @@ def load_managed_table(
 
 
 def managed_database_summary(db: ManagedDatabase) -> dict[str, str]:
-    return {"id": db.id, "name": db.name, "source_type": db.source_type}
+    return {"id": db.id, "description": db.description or db.id}
 
 
 def load_result_summary(result: LoadManagedTableResult) -> dict[str, Any]:

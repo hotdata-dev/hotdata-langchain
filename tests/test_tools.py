@@ -22,30 +22,35 @@ def test_execute_sql_json(mock_client, sample_result):
     payload = json.loads(execute_sql_json(mock_client, "select 1"))
     assert payload["metadata"]["row_count"] == 2
     assert payload["rows"] == [{"n": 1}, {"n": 2}]
-    mock_client.execute_sql.assert_called_once_with("select 1")
+    mock_client.execute_sql.assert_called_once_with("select 1", database=None)
+
+
+def test_execute_sql_json_with_database(mock_client, sample_result):
+    execute_sql_json(mock_client, "select 1", database="my_db")
+    mock_client.execute_sql.assert_called_once_with("select 1", database="my_db")
 
 
 def test_list_managed_databases_json(mock_client):
     mock_client.list_managed_databases.return_value = [
-        ManagedDatabase(id="c1", name="sales", source_type="managed"),
+        ManagedDatabase(id="c1", description="sales", default_connection_id="conn_c1"),
     ]
     payload = json.loads(list_managed_databases_json(mock_client))
-    assert payload[0]["name"] == "sales"
+    assert payload[0]["description"] == "sales"
 
 
 def test_create_managed_database_delegates(mock_client):
     mock_client.create_managed_database.return_value = ManagedDatabase(
         id="c1",
-        name="sales",
-        source_type="managed",
+        description="sales",
+        default_connection_id="conn_c1",
     )
     db = create_managed_database(mock_client, name="sales", tables=["orders"])
     mock_client.create_managed_database.assert_called_once_with(
-        "sales",
+        description="sales",
         schema="public",
         tables=["orders"],
     )
-    assert db.name == "sales"
+    assert db.description == "sales"
 
 
 def test_load_managed_table_delegates(mock_client):
@@ -74,8 +79,8 @@ def test_load_managed_table_delegates(mock_client):
 def test_make_hotdata_tools(mock_client, sample_result):
     mock_client.create_managed_database.return_value = ManagedDatabase(
         id="c1",
-        name="sales",
-        source_type="managed",
+        description="sales",
+        default_connection_id="conn_c1",
     )
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id="c1",
