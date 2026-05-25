@@ -58,8 +58,8 @@ def make_hotdata_tools(
         schema_name: str = DEFAULT_SCHEMA,
         tables: str = "",
     ) -> str:
-        """Create a Hotdata-managed database and optionally declare tables (one per line)."""
-        table_names = [line.strip() for line in tables.splitlines() if line.strip()]
+        """Create a Hotdata-managed database and optionally declare tables (comma or newline separated)."""
+        table_names = [t.strip() for t in tables.replace(",", "\n").splitlines() if t.strip()]
         db = create_managed_database(
             client,
             name=name,
