@@ -50,7 +50,7 @@ print(result)  # JSON rows
 tools["hotdata_create_managed_database"].invoke({
     "name": "sales",
     "schema_name": "public",
-    "tables": "orders,customers",
+    "tables": "orders\ncustomers",
 })
 
 tools["hotdata_load_managed_table"].invoke({
