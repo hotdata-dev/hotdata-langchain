@@ -211,7 +211,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hotdata", specifier = ">=0.2.5" },
-    { name = "hotdata-runtime", specifier = ">=0.2.1" },
+    { name = "hotdata-runtime", specifier = ">=0.2.3" },
     { name = "langchain-core", specifier = ">=0.3.0" },
 ]
 
