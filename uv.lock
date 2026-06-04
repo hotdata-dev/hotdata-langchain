@@ -195,7 +195,7 @@ wheels = [
 
 [[package]]
 name = "hotdata-langchain"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "hotdata" },
@@ -211,7 +211,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hotdata", specifier = ">=0.2.5" },
-    { name = "hotdata-runtime", specifier = ">=0.2.1" },
+    { name = "hotdata-runtime", specifier = ">=0.2.4" },
     { name = "langchain-core", specifier = ">=0.3.0" },
 ]
 
@@ -220,16 +220,16 @@ dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "hotdata-runtime"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/5f/49add2fc8a6adb53320c1db6c67333f4f71f67f124baff19a66530042ff3/hotdata_runtime-0.2.3.tar.gz", hash = "sha256:8631edc4b17debe0a8089f88d2d13abc8fd307827f8c78b9c5bb8e84fdcbc698", size = 65731, upload-time = "2026-05-27T22:36:08.631Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/af/14cfe7a06cef35ac624b608926e94850ba4289f9572a476ab729c4ff340c/hotdata_runtime-0.2.4.tar.gz", hash = "sha256:1d09f75332a51870fcba0df3e7b59e543c5dbff60c48509fedd90f6aa4927dfa", size = 66075, upload-time = "2026-06-01T22:51:57.368Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/71/3a7af1d7dbf8b28023685f8ed7444c2b2ecf824ff6f6af1855124528bd9a/hotdata_runtime-0.2.3-py3-none-any.whl", hash = "sha256:46b4afaf7cf3c1b9c6f8f071e8a841c4c30f8674301abd72db1afdc8124094ef", size = 10410, upload-time = "2026-05-27T22:36:07.532Z" },
+    { url = "https://files.pythonhosted.org/packages/82/71/c4ecba76fd60e443fabdb17a6102eeaffceeedeab01897caf1adea425b43/hotdata_runtime-0.2.4-py3-none-any.whl", hash = "sha256:9c501033c3c9722eaab229be8be64cb33e66da9e58e3a549e697ee646a2e72cd", size = 10406, upload-time = "2026-06-01T22:51:56.102Z" },
 ]
 
 [[package]]
