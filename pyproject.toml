@@ -4,20 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hotdata-langchain"
-version = "0.1.1"
+version = "0.2.0"
 description = "LangChain tools for Hotdata runtime"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-  "hotdata-runtime>=0.2.1",
-  "hotdata>=0.2.5",
-  "langchain-core>=0.3.0",
+  "hotdata-runtime>=0.2.4",
+  "hotdata>=0.4.1",
+  "langchain-core>=1.0",
 ]
 
 [dependency-groups]
 dev = [
   "pytest>=8.0",
+  "ruff>=0.5",
+  "mypy>=1.5",
 ]
 
 [tool.uv]
@@ -28,3 +30,41 @@ packages = ["hotdata_langchain"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "DTZ", "T20", "RET", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/**/*.py" = ["T201"]
+"scripts/**/*.py" = ["T201", "E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["hotdata_langchain", "tests"]
+namespace_packages = true
+explicit_package_bases = true
+warn_unused_configs = true
+disallow_any_generics = true
+disallow_any_unimported = true
+disallow_any_expr = false
+disallow_any_decorated = false
+disallow_any_explicit = false
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+implicit_reexport = false
+implicit_optional = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+strict_equality = true
+strict_bytes = true
+extra_checks = true
