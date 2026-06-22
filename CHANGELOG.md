@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.2.1] - 2026-06-22
+
+### Changed
+
+- Pin `hotdata-runtime` to `>=0.3.0` (adds the typed-error API:
+  `HotdataError`/`HotdataTransientError`/`HotdataTerminalError`/`classify_sdk_error`).
+  No code adoption was required: this package has no SDK error-handling call sites — its
+  runtime calls are thin pass-throughs exposed as LangChain `StructuredTool`s, which let
+  exceptions propagate to the LangChain runtime by design.
+
 ## [0.2.0] - 2026-06-22
 
 ### Changed
