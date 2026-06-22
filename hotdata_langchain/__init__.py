@@ -8,6 +8,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from hotdata_runtime import HotdataClient, QueryResult, from_env
+
 from hotdata_langchain.databases import (
     create_managed_database,
     list_managed_databases_json,
@@ -22,9 +23,9 @@ from hotdata_langchain.tools import (
 )
 
 __all__ = [
-    "__version__",
     "HotdataClient",
     "QueryResult",
+    "__version__",
     "create_managed_database",
     "execute_sql_json",
     "from_env",

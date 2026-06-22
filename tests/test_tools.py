@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
 from hotdata_runtime import LoadManagedTableResult, ManagedDatabase
 
@@ -101,9 +100,7 @@ def test_make_hotdata_tools(mock_client, sample_result):
     json.loads(by_name["hotdata_execute_sql"].invoke({"sql": "select 1"}))
     json.loads(by_name["hotdata_list_managed_databases"].invoke({}))
     json.loads(
-        by_name["hotdata_create_managed_database"].invoke(
-            {"name": "sales", "tables": "orders"}
-        )
+        by_name["hotdata_create_managed_database"].invoke({"name": "sales", "tables": "orders"})
     )
     json.loads(
         by_name["hotdata_load_managed_table"].invoke(

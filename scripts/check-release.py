@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -33,7 +32,14 @@ def has_changelog_section(version: str) -> bool:
 def main() -> None:
     base = "origin/main"
     for candidate in ("origin/main", "origin/master"):
-        if subprocess.call(["git", "rev-parse", "--verify", candidate], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        if (
+            subprocess.call(
+                ["git", "rev-parse", "--verify", candidate],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            == 0
+        ):
             base = candidate
             break
 

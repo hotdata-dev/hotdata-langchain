@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain_core.tools import StructuredTool
-
 from hotdata_runtime import DEFAULT_SCHEMA, HotdataClient, QueryResult
+from langchain_core.tools import StructuredTool
 
 from hotdata_langchain.databases import (
     create_managed_database,
@@ -58,7 +57,7 @@ def make_hotdata_tools(
         schema_name: str = DEFAULT_SCHEMA,
         tables: str = "",
     ) -> str:
-        """Create a Hotdata-managed database and optionally declare tables (comma or newline separated)."""
+        """Create a managed database and optionally declare tables (comma/newline separated)."""
         table_names = [t.strip() for t in tables.replace(",", "\n").splitlines() if t.strip()]
         db = create_managed_database(
             client,
