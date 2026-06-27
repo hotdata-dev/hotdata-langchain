@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Pin `hotdata-runtime` to `>=0.3.0` (adds the typed-error API:
+- Pin `hotdata-framework` to `>=0.3.0` (adds the typed-error API:
   `HotdataError`/`HotdataTransientError`/`HotdataTerminalError`/`classify_sdk_error`).
   No code adoption was required: this package has no SDK error-handling call sites — its
   runtime calls are thin pass-throughs exposed as LangChain `StructuredTool`s, which let
@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Upgrade `hotdata` SDK pin to `>=0.4.1` and `hotdata-runtime` to `>=0.2.4`.
+- Upgrade `hotdata` SDK pin to `>=0.4.1` and `hotdata-framework` to `>=0.2.4`.
 - Raise `langchain-core` floor to `>=1.0` (verified against the test suite).
 
 ### Added

@@ -1,11 +1,11 @@
-"""LangChain tools built on hotdata-runtime."""
+"""LangChain tools built on hotdata-framework."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from hotdata_runtime import DEFAULT_SCHEMA, HotdataClient, QueryResult
+from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, QueryResult
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain.databases import (
