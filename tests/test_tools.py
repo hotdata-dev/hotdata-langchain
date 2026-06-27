@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from hotdata_runtime import LoadManagedTableResult, ManagedDatabase
+from hotdata_framework import LoadManagedTableResult, ManagedDatabase
 
 from hotdata_langchain.databases import (
     create_managed_database,

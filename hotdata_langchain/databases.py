@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from hotdata_runtime import (
+from hotdata_framework import (
     DEFAULT_SCHEMA,
     HotdataClient,
     LoadManagedTableResult,
