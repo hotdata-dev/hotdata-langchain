@@ -9,6 +9,7 @@ except PackageNotFoundError:
 
 from hotdata_framework import HotdataClient, QueryResult, from_env
 
+from hotdata_langchain.cache import HotdataToolCache, cached
 from hotdata_langchain.databases import (
     create_managed_database,
     list_managed_databases_json,
@@ -24,8 +25,10 @@ from hotdata_langchain.tools import (
 
 __all__ = [
     "HotdataClient",
+    "HotdataToolCache",
     "QueryResult",
     "__version__",
+    "cached",
     "create_managed_database",
     "execute_sql_json",
     "from_env",

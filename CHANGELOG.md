@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
 
+- `HotdataToolCache` and `cached()` in `hotdata_langchain.cache`: cache LangChain tool
+  results in a Hotdata managed table, keyed by tool name and arguments. Works on any
+  plain function/tool, not just this package's own. `make_hotdata_tools` gains `cache`
+  and `cache_ttl` parameters that wire the two read-only tools (`hotdata_execute_sql`,
+  `hotdata_list_managed_databases`) through it; the mutating tools are never cached.
+
+### Changed
+
+- Bump `hotdata-framework` to `>=0.8.0` and `hotdata` to `>=0.8.0` — both released 0.8.0
+  today, adding native key-based `mode="upsert"`/`"update"`/`"delete"` loads on managed
+  tables (used by the new cache backend) and a per-call `key=` override on
+  `load_managed_table`.
+- Add `pyarrow` as a direct dependency (already a transitive dependency of
+  `hotdata-framework`; the new cache module writes parquet directly).
 
 ## [0.2.2] - 2026-06-27
 

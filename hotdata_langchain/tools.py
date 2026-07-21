@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, QueryResult
 from langchain_core.tools import StructuredTool
 
+from hotdata_langchain.cache import HotdataToolCache, cached
 from hotdata_langchain.databases import (
     create_managed_database,
     list_managed_databases_json,
@@ -41,8 +43,18 @@ def make_hotdata_tools(
     *,
     max_rows: int = 100,
     database: str | None = None,
+    cache: HotdataToolCache | None = None,
+    cache_ttl: timedelta | None = None,
 ) -> list[StructuredTool]:
-    """Return LangChain tools for SQL and managed database workflows."""
+    """Return LangChain tools for SQL and managed database workflows.
+
+    Pass ``cache`` to serve repeated calls to the read-only tools
+    (``hotdata_execute_sql``, ``hotdata_list_managed_databases``) from a
+    :class:`~hotdata_langchain.cache.HotdataToolCache` instead of re-running them. The
+    mutating tools (``hotdata_create_managed_database``, ``hotdata_load_managed_table``)
+    are never cached — caching a mutation and skipping it on a cache hit would be a
+    correctness bug, not caching.
+    """
 
     def hotdata_execute_sql(sql: str) -> str:
         """Run SQL against the Hotdata workspace and return JSON rows."""
@@ -51,6 +63,17 @@ def make_hotdata_tools(
     def hotdata_list_managed_databases() -> str:
         """List Hotdata-managed databases in the workspace."""
         return list_managed_databases_json(client)
+
+    if cache is not None:
+        hotdata_execute_sql = cached(
+            hotdata_execute_sql, cache=cache, tool_name="hotdata_execute_sql", ttl=cache_ttl
+        )
+        hotdata_list_managed_databases = cached(
+            hotdata_list_managed_databases,
+            cache=cache,
+            tool_name="hotdata_list_managed_databases",
+            ttl=cache_ttl,
+        )
 
     def hotdata_create_managed_database(
         name: str,
