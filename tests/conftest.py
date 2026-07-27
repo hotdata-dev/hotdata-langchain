@@ -21,6 +21,20 @@ def sample_result() -> QueryResult:
 
 
 @pytest.fixture
+def search_result() -> QueryResult:
+    return QueryResult(
+        columns=["description", "score"],
+        rows=[["Cozy apartment with a view", 8.5], ["Cozy studio, great light", 4.25]],
+        row_count=2,
+        result_id="res_bm25",
+        query_run_id="run_bm25",
+        execution_time_ms=8,
+        warning=None,
+        error_message=None,
+    )
+
+
+@pytest.fixture
 def mock_client(sample_result: QueryResult):
     client = MagicMock()
     client.workspace_id = "ws_test"
