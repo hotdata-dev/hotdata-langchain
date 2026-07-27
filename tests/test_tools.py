@@ -24,9 +24,9 @@ def test_execute_sql_json(mock_client, sample_result):
     mock_client.execute_sql.assert_called_once_with("select 1", database=None)
 
 
-def test_execute_sql_json_with_database(mock_client, sample_result):
-    execute_sql_json(mock_client, "select 1", database="my_db")
-    mock_client.execute_sql.assert_called_once_with("select 1", database="my_db")
+def test_execute_sql_json_with_database(mock_client, sample_result, managed_db):
+    execute_sql_json(mock_client, "select 1", database=managed_db)
+    mock_client.execute_sql.assert_called_once_with("select 1", database=managed_db)
 
 
 def test_list_managed_databases_json(mock_client):
@@ -52,7 +52,8 @@ def test_create_managed_database_delegates(mock_client):
     assert db.description == "sales"
 
 
-def test_load_managed_table_delegates(mock_client):
+def test_load_managed_table_delegates(mock_client, managed_db):
+    """The load addresses the resolved record, so no name can select the target."""
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id="c1",
         schema_name="public",
@@ -62,12 +63,12 @@ def test_load_managed_table_delegates(mock_client):
     )
     loaded = load_managed_table(
         mock_client,
-        database="sales",
+        database_id=managed_db,
         table="orders",
         file="/tmp/orders.parquet",
     )
     mock_client.load_managed_table.assert_called_once_with(
-        "sales",
+        managed_db,
         "orders",
         schema="public",
         file="/tmp/orders.parquet",
@@ -75,7 +76,7 @@ def test_load_managed_table_delegates(mock_client):
     assert loaded.row_count == 3
 
 
-def test_make_hotdata_tools(mock_client, sample_result):
+def test_make_hotdata_tools(mock_client, sample_result, managed_db, databases_api):
     mock_client.create_managed_database.return_value = ManagedDatabase(
         id="c1",
         description="sales",
@@ -106,7 +107,7 @@ def test_make_hotdata_tools(mock_client, sample_result):
     json.loads(
         by_name["hotdata_load_managed_table"].invoke(
             {
-                "database": "sales",
+                "database_id": managed_db.id,
                 "table": "orders",
                 "file": "/tmp/orders.parquet",
             }

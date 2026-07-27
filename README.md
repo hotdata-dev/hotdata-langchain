@@ -23,7 +23,7 @@ from langchain.agents import create_agent
 import hotdata_langchain as hl
 
 client = hl.from_env()
-tools = hl.make_hotdata_tools(client, database="sales")
+tools = hl.make_hotdata_tools(client, database_id="dbid...")
 
 agent = create_agent(model=your_model, tools=tools)
 result = agent.invoke(
@@ -32,8 +32,9 @@ result = agent.invoke(
 print(result["messages"][-1].content)
 ```
 
-Queries run against a database scope, so pass `database=` (a managed database name or id).
-`hl.from_env().list_managed_databases()` shows what is available in the workspace.
+Queries run against a database scope, so pass `database_id=` (a managed database id).
+`hl.from_env().list_managed_databases()` shows what is available in the workspace, with the
+id of each.
 
 ## Tools
 
@@ -42,9 +43,9 @@ Queries run against a database scope, so pass `database=` (a managed database na
 | Tool | What it does |
 |------|-------------|
 | `hotdata_execute_sql` | Run a SQL query and return rows as JSON |
-| `hotdata_list_managed_databases` | List available managed databases |
-| `hotdata_create_managed_database` | Create a new managed database |
-| `hotdata_load_managed_table` | Load a parquet file into a managed table |
+| `hotdata_list_managed_databases` | List available managed databases, with the id of each |
+| `hotdata_create_managed_database` | Create a new managed database and return its id |
+| `hotdata_load_managed_table` | Load a parquet file into a managed table, addressed by database id |
 | `hotdata_describe_tables` | List tables, or one table's columns and types |
 | `hotdata_search_text` | Full-text search an indexed column, ranked by relevance (opt-in — see below) |
 
@@ -58,8 +59,8 @@ table with its column count; called with a table name it returns that table's co
 types. Without it an agent has to guess column names, and a guess that misses fails the query.
 
 ```python
-tools = hl.make_hotdata_tools(client, database="sales")            # included
-tools = hl.make_hotdata_tools(client, database="sales", describe_tables=False)  # omitted
+tools = hl.make_hotdata_tools(client, database_id="dbid...")            # included
+tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=False)  # omitted
 ```
 
 It reads `information_schema` in whichever database the tools are scoped to, so it needs no
@@ -71,19 +72,21 @@ extra permissions. With it turned off, the SQL tool's description tells the agen
 You can also invoke tools outside of an agent loop:
 
 ```python
-tools = {t.name: t for t in hl.make_hotdata_tools(client, database="sales")}
+import json
+
+tools = {t.name: t for t in hl.make_hotdata_tools(client, database_id="dbid...")}
 
 result = tools["hotdata_execute_sql"].invoke({"sql": "SELECT * FROM orders LIMIT 10"})
 print(result)  # JSON rows
 
-tools["hotdata_create_managed_database"].invoke({
-    "name": "sales",
+created = tools["hotdata_create_managed_database"].invoke({
+    "name": "sales",            # a display label, not an identifier
     "schema_name": "public",
     "tables": "orders,customers",
 })
 
 tools["hotdata_load_managed_table"].invoke({
-    "database": "sales",
+    "database_id": json.loads(created)["id"],
     "table": "orders",
     "file": "/path/to/orders.parquet",
 })
@@ -96,7 +99,7 @@ Point the agent at a text column carrying a BM25 index and it gets a search tool
 ```python
 tools = hl.make_hotdata_tools(
     client,
-    database="sf_airbnb",
+    database_id="dbid...",
     search_table="default.public.listings",   # catalog.schema.table
     search_column="description",              # must have a BM25 index
     search_columns=["id", "name", "price", "description"],  # what each hit returns
@@ -114,7 +117,7 @@ the tool surface lets an agent discover which columns are indexed, and the engin
 outright rather than falling back to a scan when a column has no BM25 index.
 
 Inside a managed database the built-in catalog is always `default`, so a managed table reads
-as `default.<schema>.<table>` when `database=` scopes the query to it.
+as `default.<schema>.<table>` when `database_id=` scopes the query to it.
 
 For more than one searchable corpus, build the tools yourself and give each a distinct name
 and description — the agent then routes on the descriptions:
@@ -126,14 +129,14 @@ tools = [
     # and the agent goes back to trying to match text in SQL.
     *hl.make_hotdata_tools(
         client,
-        database="sf_airbnb",
+        database_id="dbid...",
         search_table="default.public.listings",
         search_column="description",
         search_tool_name="search_listings",
     ),
     hl.make_hotdata_search_tool(
         client, table="default.public.reviews", column="comments",
-        name="search_reviews", database="sf_airbnb",
+        name="search_reviews", database_id="dbid...",
     ),
 ]
 ```
@@ -144,12 +147,27 @@ index, then an agent that picks between search and SQL.
 
 ## Scoping queries to a managed database
 
-`database=` resolves all SQL the agent runs against a specific managed database, by name or
-id. The API requires a database scope, so queries fail with `a database is required` without
-it:
+`database_id=` scopes all SQL the agent runs to one managed database. The API requires a
+database scope, so queries fail with `a database is required` without it:
 
 ```python
-tools = hl.make_hotdata_tools(client, database="sales")
+tools = hl.make_hotdata_tools(client, database_id="dbid...")
+```
+
+**Databases are addressed by id, never by name.** A database name is a display label and is
+not unique, so a name lookup can silently resolve to the wrong database — and the agent's
+`hotdata_load_managed_table` overwrites the table it loads into. Passing a name raises
+`KeyError`. Ids come from `client.list_managed_databases()`, the
+`hotdata_list_managed_databases` tool, or the response of a create.
+
+The id is resolved once when the tools are built, so a bad id fails there rather than on the
+agent's first query, and no query pays a repeat lookup. If you already hold a
+`ManagedDatabase` — from `list_managed_databases()` or `create_managed_database()` — pass it
+instead of its id to skip the lookup entirely:
+
+```python
+db = client.create_managed_database(description="sales", schema="public", tables=["orders"])
+tools = hl.make_hotdata_tools(client, database_id=db)
 ```
 
 ## Controlling result size

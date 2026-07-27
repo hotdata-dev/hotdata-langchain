@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-from hotdata_framework import QueryResult
+from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.schema import (
     DEFAULT_MAX_COLUMNS,
@@ -158,11 +158,17 @@ def test_describe_reports_an_unknown_table_rather_than_empty_success() -> None:
     assert "no table named" in payload["error"]
 
 
-def test_describe_scopes_queries_to_the_database() -> None:
+def test_describe_scopes_queries_to_the_database(managed_db: ManagedDatabase) -> None:
     client = MagicMock()
     client.execute_sql.return_value = OVERVIEW
-    describe_tables_json(client, database="sf_airbnb")
-    assert client.execute_sql.call_args.kwargs == {"database": "sf_airbnb"}
+    describe_tables_json(client, database=managed_db)
+    assert client.execute_sql.call_args.kwargs == {"database": managed_db}
+
+
+def test_describe_refuses_an_unresolved_database_scope() -> None:
+    """A bare string would reach the framework's by-name fallback."""
+    with pytest.raises(TypeError, match="resolve_database_by_id"):
+        describe_tables_json(MagicMock(), database="sf_airbnb")  # type: ignore[arg-type]
 
 
 # --- Tool surface -----------------------------------------------------------------

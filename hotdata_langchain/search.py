@@ -6,10 +6,11 @@ import json
 import re
 from collections.abc import Sequence
 
-from hotdata_framework import HotdataClient
+from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import quote_literal, validate_identifier
+from hotdata_langchain.databases import query_scope, resolve_database_by_id
 
 #: Column the engine appends to every ``bm25_search`` result, holding the BM25 relevance score.
 SCORE_COLUMN = "score"
@@ -95,16 +96,19 @@ def bm25_search_json(
     k: int = DEFAULT_SEARCH_LIMIT,
     columns: Sequence[str] | None = None,
     max_rows: int = 100,
-    database: str | None = None,
+    database: ManagedDatabase | None = None,
 ) -> str:
     """Run a BM25 search and return ``{"metadata": ..., "rows": [...]}`` as JSON.
 
     Mirrors the envelope :func:`hotdata_langchain.tools.execute_sql_json` returns, so an
     agent sees one result shape across every Hotdata tool. Rows arrive ranked by
     ``score`` descending.
+
+    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
+    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
     """
     sql = bm25_search_sql(table=table, column=column, query=query, k=k, columns=columns)
-    result = client.execute_sql(sql, database=database)
+    result = client.execute_sql(sql, database=query_scope(database))
     payload = {
         "metadata": result.metadata_dict(),
         "rows": result.to_records(max_rows=max_rows),
@@ -141,7 +145,7 @@ def make_hotdata_search_tool(
     name: str = DEFAULT_SEARCH_TOOL_NAME,
     description: str | None = None,
     max_rows: int = 100,
-    database: str | None = None,
+    database_id: str | ManagedDatabase | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that full-text searches one indexed column.
 
@@ -149,6 +153,10 @@ def make_hotdata_search_tool(
     surface lets an agent discover which columns carry a BM25 index, and the engine
     errors outright when one is missing. The agent supplies only ``query`` and an
     optional ``k``.
+
+    ``database_id`` scopes the search to one managed database, by id and never by name;
+    it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip the
+    lookup.
 
     Register the factory more than once, with distinct ``name`` and ``description``
     values, to expose several searchable corpora; the agent then routes on the
@@ -167,6 +175,7 @@ def make_hotdata_search_tool(
     if columns is not None:
         _projection(column, columns)
     default_k = k
+    database = resolve_database_by_id(client, database_id) if database_id is not None else None
 
     def hotdata_search_text(query: str, k: int | None = None) -> str:
         """Search indexed text by relevance and return ranked rows as JSON."""
