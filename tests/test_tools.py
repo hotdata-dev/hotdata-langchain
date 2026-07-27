@@ -95,6 +95,7 @@ def test_make_hotdata_tools(mock_client, sample_result):
         "hotdata_list_managed_databases",
         "hotdata_create_managed_database",
         "hotdata_load_managed_table",
+        "hotdata_describe_tables",
     }
 
     json.loads(by_name["hotdata_execute_sql"].invoke({"sql": "select 1"}))

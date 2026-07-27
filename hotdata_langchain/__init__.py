@@ -16,6 +16,19 @@ from hotdata_langchain.databases import (
     load_result_summary,
     managed_database_summary,
 )
+from hotdata_langchain.schema import (
+    DEFAULT_DESCRIBE_TOOL_NAME,
+    describe_tables_json,
+    make_hotdata_describe_tables_tool,
+)
+from hotdata_langchain.search import (
+    DEFAULT_SEARCH_LIMIT,
+    DEFAULT_SEARCH_TOOL_NAME,
+    SCORE_COLUMN,
+    bm25_search_json,
+    bm25_search_sql,
+    make_hotdata_search_tool,
+)
 from hotdata_langchain.tools import (
     execute_sql_json,
     make_hotdata_tools,
@@ -23,15 +36,24 @@ from hotdata_langchain.tools import (
 )
 
 __all__ = [
+    "DEFAULT_DESCRIBE_TOOL_NAME",
+    "DEFAULT_SEARCH_LIMIT",
+    "DEFAULT_SEARCH_TOOL_NAME",
+    "SCORE_COLUMN",
     "HotdataClient",
     "QueryResult",
     "__version__",
+    "bm25_search_json",
+    "bm25_search_sql",
     "create_managed_database",
+    "describe_tables_json",
     "execute_sql_json",
     "from_env",
     "list_managed_databases_json",
     "load_managed_table",
     "load_result_summary",
+    "make_hotdata_describe_tables_tool",
+    "make_hotdata_search_tool",
     "make_hotdata_tools",
     "managed_database_summary",
     "result_rows_for_llm",
