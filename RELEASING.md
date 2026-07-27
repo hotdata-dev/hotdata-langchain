@@ -5,6 +5,7 @@ Every release uses `./scripts/release.sh`. Do not bump versions, tag, or create 
 ## One-time setup
 
 - Install [GitHub CLI](https://cli.github.com/) (`gh`) and authenticate.
+- Install [uv](https://docs.astral.sh/uv/). `prepare` relocks `uv.lock` with it, since the lock file records this project's own version and CI installs with `uv sync --locked`.
 - Ensure PyPI [trusted publishing](https://docs.pypi.org/trusted-publishers/) is configured for this repo (`publish.yml` uses the `pypi` GitHub environment).
 
 ## Release steps
