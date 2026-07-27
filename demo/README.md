@@ -83,13 +83,16 @@ and SQL are both inspectable after the fact.
    Set the model with `--model` or `DEMO_MODEL`; any tool-calling model works, and the
    step is skipped when its provider key is absent.
 
-   **What this step reliably demonstrates is the routing**, not the arithmetic. Across
-   five runs the agent called the search tool every time and reached for the schema tool
-   in four, which is the behaviour the demo exists to show. The final table was right in
-   four of five — one run aggregated over the handful of matched listings instead of all
-   listings in those neighbourhoods. Answering a compound question correctly is a property
-   of the model, not of these tools, so read the printed tool calls as the result and treat
-   the prose answer as illustrative.
+   **What this step demonstrates is the routing.** Across five runs of the current
+   configuration the agent called the search tool and the schema tool every time, and the
+   final table matched the whole-neighbourhood figures every time. Two of those runs also
+   recovered from a bad query after the error was handed back to them.
+
+   Do not read five runs as a guarantee. Answering a compound question correctly is a
+   property of the model rather than of these tools, and an earlier configuration — which
+   shared one row budget between the search and SQL tools, silently truncating the
+   aggregate — got it right in only four of five. The printed tool calls are the reliable
+   part; treat the prose answer as illustrative.
 
 ## What makes the agent run work
 

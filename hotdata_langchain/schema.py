@@ -65,7 +65,11 @@ def describe_tables_json(
     what exists. With ``table`` it returns that table's columns and types in
     declaration order, capped at ``max_columns`` so a wide table cannot flood the
     model's context; the payload says so when the cap truncated the list.
+
+    Raises ``ValueError`` for a non-positive ``max_columns``.
     """
+    if max_columns < 1:
+        raise ValueError(f"max_columns must be >= 1, got {max_columns}")
     if table is None:
         result = client.execute_sql(table_overview_sql(), database=database)
         tables = [
@@ -118,7 +122,12 @@ def make_hotdata_describe_tables_tool(
     description: str | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
 ) -> StructuredTool:
-    """Return a LangChain tool that reports the scoped database's tables and columns."""
+    """Return a LangChain tool that reports the scoped database's tables and columns.
+
+    Fails fast on a non-positive ``max_columns`` rather than at first invocation.
+    """
+    if max_columns < 1:
+        raise ValueError(f"max_columns must be >= 1, got {max_columns}")
 
     def hotdata_describe_tables(table: str | None = None) -> str:
         """List the tables in the database, or one table's columns and types."""

@@ -127,6 +127,19 @@ def test_describe_reports_truncation_and_trims_to_the_cap() -> None:
     assert [c["name"] for c in payload["columns"]] == ["id"]
 
 
+def test_describe_rejects_a_non_positive_max_columns() -> None:
+    """Reading one row past the cap makes a zero cap slice to empty and then index it."""
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS
+    with pytest.raises(ValueError, match="max_columns must be >= 1"):
+        describe_tables_json(client, table="listings", max_columns=0)
+
+
+def test_describe_tool_rejects_a_non_positive_max_columns() -> None:
+    with pytest.raises(ValueError, match="max_columns must be >= 1"):
+        make_hotdata_describe_tables_tool(MagicMock(), max_columns=0)
+
+
 def test_describe_queries_one_row_past_the_cap() -> None:
     """Distinguishing exact-fit from truncated needs the extra row."""
     client = MagicMock()
