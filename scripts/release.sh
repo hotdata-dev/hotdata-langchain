@@ -82,9 +82,18 @@ PY
 
 default_branch() {
   local remote="${1:-origin}"
-  git symbolic-ref --quiet "refs/remotes/${remote}/HEAD" 2>/dev/null | sed "s|refs/remotes/${remote}/||" \
-    || { git branch -r | sed -n "s|^  ${remote}/\\(main\\|master\\)$|\\1|p" | head -1; } \
-    || echo main
+  local branch
+  branch="$(git symbolic-ref --quiet "refs/remotes/${remote}/HEAD" 2>/dev/null | sed "s|refs/remotes/${remote}/||")"
+  if [[ -n "$branch" ]]; then
+    echo "$branch"
+    return
+  fi
+  branch="$(git branch -r --list "${remote}/main" "${remote}/master" | sed "s|^[[:space:]]*${remote}/||" | head -1)"
+  if [[ -n "$branch" ]]; then
+    echo "$branch"
+    return
+  fi
+  echo main
 }
 
 ensure_clean() {
@@ -103,6 +112,7 @@ cmd_prepare() {
   [[ -n "$bump" ]] || { usage; die "missing bump kind or explicit version"; }
   need gh
   need python3
+  need uv
   ensure_clean
 
   local current new base branch pkg
@@ -122,10 +132,12 @@ cmd_prepare() {
 
   set_version "$new"
   update_changelog "$new"
+  # uv.lock records this project's own version, and CI installs with --locked.
+  uv lock
 
   branch="release/v${new}"
   git checkout -b "$branch"
-  git add pyproject.toml CHANGELOG.md
+  git add pyproject.toml CHANGELOG.md uv.lock
   git commit -m "chore: release v${new}"
 
   pkg="$(get_pkg_name)"
