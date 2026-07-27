@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
-import re
 
 from hotdata_framework import HotdataClient
 from langchain_core.tools import StructuredTool
+
+from hotdata_langchain._sql import validate_identifier
 
 DEFAULT_DESCRIBE_TOOL_NAME = "hotdata_describe_tables"
 
 #: Cap on columns returned for a single table, so one wide table cannot flood the context.
 DEFAULT_MAX_COLUMNS = 200
-
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _split_table(table: str) -> tuple[str | None, str]:
@@ -25,8 +24,7 @@ def _split_table(table: str) -> tuple[str | None, str]:
             f"got {table!r}"
         )
     for part in parts:
-        if not _IDENTIFIER_RE.fullmatch(part):
-            raise ValueError(f"table must be made of bare SQL identifiers, got {table!r}")
+        validate_identifier(part, label="table")
     return (parts[0], parts[1]) if len(parts) == 2 else (None, parts[0])
 
 
@@ -79,18 +77,23 @@ def describe_tables_json(
         ]
         return json.dumps({"tables": tables}, indent=2)
 
-    result = client.execute_sql(table_columns_sql(table, limit=max_columns), database=database)
+    # One row past the cap, so a table with exactly `max_columns` columns is reported as
+    # complete rather than flagged as truncated — telling the model part of the schema is
+    # missing is the one thing likely to send it back to guessing.
+    result = client.execute_sql(table_columns_sql(table, limit=max_columns + 1), database=database)
     records = result.to_records()
     if not records:
         return json.dumps(
             {"table": table, "columns": [], "error": f"no table named {table!r} in this database"},
             indent=2,
         )
+    truncated = len(records) > max_columns
+    records = records[:max_columns]
     payload: dict[str, object] = {
         "table": f"{records[0]['table_schema']}.{records[0]['table_name']}",
         "columns": [{"name": r["column_name"], "type": r["data_type"]} for r in records],
     }
-    if len(records) == max_columns:
+    if truncated:
         payload["truncated_at"] = max_columns
     return json.dumps(payload, indent=2)
 

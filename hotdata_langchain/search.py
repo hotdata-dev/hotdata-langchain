@@ -9,6 +9,8 @@ from collections.abc import Sequence
 from hotdata_framework import HotdataClient
 from langchain_core.tools import StructuredTool
 
+from hotdata_langchain._sql import quote_literal, validate_identifier
+
 #: Column the engine appends to every ``bm25_search`` result, holding the BM25 relevance score.
 SCORE_COLUMN = "score"
 
@@ -17,7 +19,6 @@ DEFAULT_SEARCH_LIMIT = 5
 
 DEFAULT_SEARCH_TOOL_NAME = "hotdata_search_text"
 
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _TABLE_REF_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*"
 )
@@ -33,26 +34,12 @@ def _validate_table_ref(table: str) -> str:
     return table
 
 
-def _validate_identifier(value: str, *, label: str) -> str:
-    """Return ``value`` if it is a bare SQL identifier, else raise."""
-    if not _IDENTIFIER_RE.fullmatch(value):
-        raise ValueError(f"{label} must be a bare SQL identifier, got {value!r}")
-    return value
-
-
-def _quote_literal(value: str) -> str:
-    """Return ``value`` as a single-quoted SQL string literal with quotes doubled."""
-    if "\x00" in value:
-        raise ValueError("search text may not contain null bytes")
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _projection(column: str, columns: Sequence[str] | None) -> list[str]:
     selected = list(columns) if columns is not None else [column]
     if not selected:
         raise ValueError("columns must not be empty")
     for name in selected:
-        _validate_identifier(name, label="column")
+        validate_identifier(name, label="column")
     return [*(name for name in selected if name != SCORE_COLUMN), SCORE_COLUMN]
 
 
@@ -85,7 +72,7 @@ def bm25_search_sql(
     non-positive ``k``, and for search text containing null bytes.
     """
     _validate_table_ref(table)
-    _validate_identifier(column, label="column")
+    validate_identifier(column, label="column")
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
 
@@ -93,7 +80,7 @@ def bm25_search_sql(
     return (
         f"SELECT {', '.join(projection)} "
         f"FROM bm25_search("
-        f"{_quote_literal(table)}, {_quote_literal(column)}, {_quote_literal(query)}, {k}) "
+        f"{quote_literal(table)}, {quote_literal(column)}, {quote_literal(query)}, {k}) "
         f"ORDER BY {SCORE_COLUMN} DESC "
         f"LIMIT {k}"
     )
@@ -166,11 +153,17 @@ def make_hotdata_search_tool(
     Register the factory more than once, with distinct ``name`` and ``description``
     values, to expose several searchable corpora; the agent then routes on the
     descriptions.
+
+    A ``k`` the model supplies is clamped to ``max_rows``, since anything above it would
+    have the engine rank and ship rows that are then discarded before the model sees
+    them. The caller's own ``k`` is trusted and left alone.
     """
     _validate_table_ref(table)
-    _validate_identifier(column, label="column")
+    validate_identifier(column, label="column")
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
+    if max_rows < 1:
+        raise ValueError(f"max_rows must be >= 1, got {max_rows}")
     if columns is not None:
         _projection(column, columns)
     default_k = k
@@ -182,7 +175,7 @@ def make_hotdata_search_tool(
             table=table,
             column=column,
             query=query,
-            k=default_k if k is None else k,
+            k=default_k if k is None else max(1, min(k, max_rows)),
             columns=columns,
             max_rows=max_rows,
             database=database,

@@ -56,6 +56,8 @@ PROVIDER_KEY_VARS = {
     "openai": "OPENAI_API_KEY",
 }
 INDEX_TIMEOUT_SECONDS = 600
+#: Row budget for the SQL tool, separate from the search tool's `k`.
+SQL_MAX_ROWS = 100
 
 # Deliberately not answerable from search results alone: the ratings and counts span
 # every listing in the matched neighbourhoods, not just the handful search returned.
@@ -109,8 +111,11 @@ def load_listings(client: hl.HotdataClient, parquet: Path) -> None:
 
 
 def table_columns(client: hl.HotdataClient) -> list[str]:
-    result = client.execute_sql(f"SELECT * FROM {TABLE_REF} LIMIT 1", database=DATABASE)
-    return list(result.columns)
+    """Return the table's column names, through the same tool the agent gets."""
+    described = json.loads(
+        hl.describe_tables_json(client, table=f"{SCHEMA}.{TABLE}", database=DATABASE)
+    )
+    return [column["name"] for column in described["columns"]]
 
 
 def ensure_bm25_index(client: hl.HotdataClient, connection_id: str) -> None:
@@ -297,7 +302,10 @@ def main() -> None:
         tools = hl.make_hotdata_tools(
             client,
             database=DATABASE,
-            max_rows=args.k,
+            # Not args.k: max_rows also caps the SQL tool, and the agent's aggregate in
+            # step 6 groups over whole neighbourhoods, which a search-sized budget would
+            # silently truncate. Search hits and SQL rows are different budgets.
+            max_rows=SQL_MAX_ROWS,
             search_table=TABLE_REF,
             search_column=SEARCH_COLUMN,
             search_columns=columns,

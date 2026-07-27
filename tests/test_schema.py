@@ -110,11 +110,29 @@ def test_describe_with_table_lists_columns_and_types() -> None:
     assert "truncated_at" not in payload
 
 
-def test_describe_reports_truncation_at_the_cap() -> None:
+def test_describe_reports_truncation_only_when_rows_exceed_the_cap() -> None:
+    """A table with exactly max_columns columns is complete, not truncated."""
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS  # two column rows
+    payload = json.loads(describe_tables_json(client, table="listings", max_columns=2))
+    assert len(payload["columns"]) == 2
+    assert "truncated_at" not in payload
+
+
+def test_describe_reports_truncation_and_trims_to_the_cap() -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS  # two column rows, cap of one
+    payload = json.loads(describe_tables_json(client, table="listings", max_columns=1))
+    assert payload["truncated_at"] == 1
+    assert [c["name"] for c in payload["columns"]] == ["id"]
+
+
+def test_describe_queries_one_row_past_the_cap() -> None:
+    """Distinguishing exact-fit from truncated needs the extra row."""
     client = MagicMock()
     client.execute_sql.return_value = COLUMNS
-    payload = json.loads(describe_tables_json(client, table="listings", max_columns=2))
-    assert payload["truncated_at"] == 2
+    describe_tables_json(client, table="listings", max_columns=25)
+    assert executed_sql(client).endswith("LIMIT 26")
 
 
 def test_describe_reports_an_unknown_table_rather_than_empty_success() -> None:

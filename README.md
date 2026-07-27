@@ -121,10 +121,15 @@ and description — the agent then routes on the descriptions:
 
 ```python
 tools = [
-    *hl.make_hotdata_tools(client, database="sf_airbnb"),
-    hl.make_hotdata_search_tool(
-        client, table="default.public.listings", column="description",
-        name="search_listings", database="sf_airbnb",
+    # Configure the first corpus here, so the SQL tool's description still names a search
+    # tool to defer text matching to. Passing no search_table/search_column drops that,
+    # and the agent goes back to trying to match text in SQL.
+    *hl.make_hotdata_tools(
+        client,
+        database="sf_airbnb",
+        search_table="default.public.listings",
+        search_column="description",
+        search_tool_name="search_listings",
     ),
     hl.make_hotdata_search_tool(
         client, table="default.public.reviews", column="comments",

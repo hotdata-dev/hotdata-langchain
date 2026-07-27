@@ -254,6 +254,44 @@ def test_search_tool_lets_agent_override_k(
     assert sql.endswith("LIMIT 10")
 
 
+def test_search_tool_clamps_a_model_supplied_k_to_max_rows(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """Above max_rows the engine would rank rows that are discarded before the model sees them."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=10)
+    tool.invoke({"query": QUERY, "k": 100_000})
+    sql = executed_sql(mock_client)
+    match = _SEARCH_CALL_RE.search(sql)
+    assert match is not None
+    assert match.group(1) == "10"
+    assert sql.endswith("LIMIT 10")
+
+
+def test_search_tool_leaves_a_caller_supplied_k_alone(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """The caller is trusted; only the model's k is clamped."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, k=50, max_rows=10)
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).endswith("LIMIT 50")
+
+
+def test_search_tool_keeps_a_clamped_k_positive(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    tool.invoke({"query": QUERY, "k": 0})
+    assert executed_sql(mock_client).endswith("LIMIT 1")
+
+
+def test_search_tool_rejects_a_non_positive_max_rows(mock_client: MagicMock) -> None:
+    with pytest.raises(ValueError, match="max_rows must be >= 1"):
+        make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=0)
+
+
 def test_search_tool_validates_corpus_at_construction(mock_client: MagicMock) -> None:
     with pytest.raises(ValueError, match=r"catalog\.schema\.table"):
         make_hotdata_search_tool(mock_client, table="listings", column=COLUMN)
