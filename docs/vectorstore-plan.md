@@ -216,11 +216,11 @@ docstring rather than silently "fixed."
 
 ## Testing strategy
 
-**Step 0 — confirm the embedding key's scope before writing any code.** `.env` carries
-`OPENAI_EMBEDDING_KEY` (a team key) alongside `OPENAI_API_KEY`. Its scope is unconfirmed: a
-key scoped to embeddings 403s on chat completions and a chat-scoped key 403s on embeddings.
-One `embeddings.create` call with a single short input settles it. Do this first — discovering
-it mid-implementation is the avoidable version of this problem.
+**Step 0 — confirm the embedding key's scope before writing any code. Done, 2026-08-06.**
+`.env` carries `OPENAI_EMBEDDING_KEY` (a team key) alongside `OPENAI_API_KEY`. A single
+`embeddings.create` call confirmed it is embeddings-scoped and live: `text-embedding-3-small`
+returns **1536 dimensions**, no 403. Live verification of the write/read round-trip is
+therefore unblocked, and `1536` is the dimension the first real index will be created with.
 
 Unit tests need no provider credentials. A fake `HotdataClient` (`MagicMock`) backed by an
 in-memory dict, where `load_managed_table` does a *real* `pq.read_table(file).to_pylist()` (so
