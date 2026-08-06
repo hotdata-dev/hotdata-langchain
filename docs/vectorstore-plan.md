@@ -18,8 +18,9 @@ own recent vector-search engineering:
   rewritten into an index lookup). PR #31 (merged 2026-07-21) fixed the optimizer rule to see
   through `SubqueryAlias` nodes, which is what makes the fast path reachable from SQL generated
   by anything that aliases tables (ibis, ORMs, BI tools).
-- **`runtimedb`** — the deployed query engine; PR #953 bumped its pin to pick up #31. **Merged
-  and confirmed live in production** — the fast path is no longer pending.
+- **`runtimedb`** — the deployed query engine; PR #953 bumped its pin to pick up #31, merged
+  and confirmed live in production. That removes the *deploy* as a blocker; it is not evidence
+  that the rewrite fires for the queries this package generates, which remains unobserved.
 - **`hotdata-ibis`** — gets its own read-side vector helper layer (a `semantic_search()` +
   distance-UDF module), planned and owned separately by Rohan; this plan cross-references it
   but doesn't depend on it.
@@ -167,9 +168,9 @@ using the engine's index-independent scalar distance UDFs (`cosine_distance`, `l
 at all**, always correct, just a full-table brute-force scan without one).
 
 Why this over the table function: this shape is correct from row one with zero
-preconditions, and it transparently upgrades to the HNSW fast path the moment a
+preconditions, and is intended to upgrade transparently to the HNSW fast path once a
 matching-metric index exists on that column — one code path, no index-vs-no-index branching
-to build or test. The `vector_search_vector(...)` table function, by contrast, errors loudly
+to build or test. (Intended, not observed: see "Live verification" below.) The `vector_search_vector(...)` table function, by contrast, errors loudly
 ("no loaded vector index") if the index doesn't exist yet, which would make a freshly
 constructed `HotdataVectorStore` unusable out of the box — a bad default for a
 partnership-facing integration. The raw `embedding` column is never selected in this path
@@ -306,10 +307,11 @@ all work once it lands, with no index provisioned and no further phases.
   Phases 1–2 work today regardless, against an existing index, a not-yet-existing index, or no
   index ever, by construction of the SQL-path decision above.
 - **`runtimedb` PR #953 — merged and live in production.** Pin-bump to pick up
-  `datafusion-vector-search-ext` PR #31, confirmed deployed. Our SQL was designed to be
-  correct either way (the scalar UDFs work with no index at all) — this just means the HNSW
-  fast path is now actually live for any query matching the contract above, not merely
-  pending. No longer a dependency to track.
+  `datafusion-vector-search-ext` PR #31, confirmed deployed. Our SQL was designed to be correct
+  either way (the scalar UDFs work with no index at all), so this was never a blocker. What it
+  establishes is that the engine carrying the rewrite rule is deployed — **not** that the rule
+  fires for the queries this package generates. That is still unobserved; see "Live
+  verification". No longer a dependency to track, but not a verification either.
 - **`hotdata-ibis` vector helper layer — external, owned separately, tracked for consistency
   only.** Not a dependency of this work. Cross-referenced so both surfaces target the same
   engine contract (same distance-function names, same "never select the vector column"

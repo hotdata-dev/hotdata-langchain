@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `metadata_columns`.
 
   Searches compile to a single `ORDER BY <distance_fn>(embedding, ARRAY[...]) ASC LIMIT k`
-  query using the engine's scalar distance functions. That is correct with no index at all and
-  is rewritten into an HNSW index lookup once a matching-metric vector index exists, so one
-  code path serves both and a new store is usable immediately.
+  query using the engine's scalar distance functions. That is correct with no index at all, so a
+  new store is usable immediately. Today every search is a full scan. The query is
+  also written to match the shape the engine's optimizer rewrites into an HNSW index lookup,
+  so that one code path should serve both once an index exists; that rewrite is not yet
+  confirmed end to end for these queries, and confirming it needs an index this package cannot
+  yet create.
 
   `database_id` is required and addressed by id; it is resolved once at construction and every
   read and write afterwards addresses the resolved record. `delete` requires ids.

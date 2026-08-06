@@ -83,10 +83,14 @@ class HotdataVectorStore(VectorStore):
         ORDER BY dist ASC
         LIMIT k
 
-    That shape is correct with no index at all — brute force over the table — and is
-    rewritten into an HNSW index lookup once a matching-metric vector index exists on
-    the embedding column, without the query changing. The raw ``embedding`` column is
-    never projected, because a vector column in the output declines that rewrite.
+    That shape is correct with no index at all: it brute-forces the table, which is what
+    every search does today. It is also written to match the shape the engine's
+    optimizer rewrites into an HNSW index lookup, so the same query should get faster
+    once a matching-metric index exists on the embedding column, with nothing here
+    changing. That rewrite is not yet confirmed for these queries: its conditions come
+    from reading the engine's optimizer rule, and observing it needs an index this
+    package cannot create. The raw ``embedding`` column is never projected, because a
+    vector column in the output declines the rewrite.
 
     ``database_id`` addresses the database by id and is resolved once here; every read
     and write afterwards addresses the resolved record. The store never creates a
