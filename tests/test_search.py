@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from hotdata_framework import QueryResult
+from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.search import (
     DEFAULT_SEARCH_LIMIT,
@@ -159,11 +159,23 @@ def test_bm25_search_json_returns_metadata_and_rows(
 
 
 def test_bm25_search_json_scopes_query_to_database(
-    mock_client: MagicMock, search_result: QueryResult
+    mock_client: MagicMock, search_result: QueryResult, managed_db: ManagedDatabase
 ) -> None:
     mock_client.execute_sql.return_value = search_result
-    bm25_search_json(mock_client, table=TABLE, column=COLUMN, query=QUERY, database="sf_airbnb")
-    assert mock_client.execute_sql.call_args.kwargs == {"database": "sf_airbnb"}
+    bm25_search_json(mock_client, table=TABLE, column=COLUMN, query=QUERY, database=managed_db)
+    assert mock_client.execute_sql.call_args.kwargs == {"database": managed_db}
+
+
+def test_bm25_search_json_refuses_an_unresolved_database_scope(mock_client: MagicMock) -> None:
+    """A bare string would reach the framework's by-name fallback."""
+    with pytest.raises(TypeError, match="resolve_database_by_id"):
+        bm25_search_json(
+            mock_client,
+            table=TABLE,
+            column=COLUMN,
+            query=QUERY,
+            database="sf_airbnb",  # type: ignore[arg-type]
+        )
 
 
 def test_bm25_search_json_truncates_rows_to_max_rows(
@@ -352,17 +364,17 @@ def test_make_hotdata_tools_requires_both_search_arguments(
 
 
 def test_make_hotdata_tools_shares_database_scope_with_search(
-    mock_client: MagicMock, search_result: QueryResult
+    mock_client: MagicMock, search_result: QueryResult, managed_db: ManagedDatabase
 ) -> None:
     mock_client.execute_sql.return_value = search_result
     tools = {
         tool.name: tool
         for tool in make_hotdata_tools(
-            mock_client, database="sf_airbnb", search_table=TABLE, search_column=COLUMN
+            mock_client, database_id=managed_db, search_table=TABLE, search_column=COLUMN
         )
     }
     tools["hotdata_search_text"].invoke({"query": QUERY})
-    assert mock_client.execute_sql.call_args.kwargs == {"database": "sf_airbnb"}
+    assert mock_client.execute_sql.call_args.kwargs == {"database": managed_db}
 
 
 def test_make_hotdata_tools_shares_max_rows_with_search(

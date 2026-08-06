@@ -9,14 +9,16 @@ def main() -> None:
     tools = {tool.name: tool for tool in hl.make_hotdata_tools(client)}
     print(tools["hotdata_list_managed_databases"].invoke({}))
 
-    # Queries need a database scope, so pick one from the workspace.
+    # Queries need a database scope, addressed by id — a database name is a display
+    # label and is not unique. Pass the listed record straight through to reuse the
+    # lookup that produced it.
     databases = client.list_managed_databases()
     if not databases:
         print("No managed databases in this workspace; create one to run a query.")
         client.close()
         return
 
-    scoped = hl.make_hotdata_tools(client, database=databases[0].id)
+    scoped = hl.make_hotdata_tools(client, database_id=databases[0])
     by_name = {tool.name: tool for tool in scoped}
     print(by_name["hotdata_execute_sql"].invoke({"sql": "SELECT 1 AS ok"}))
 

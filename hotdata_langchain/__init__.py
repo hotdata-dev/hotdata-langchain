@@ -7,7 +7,7 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from hotdata_framework import HotdataClient, QueryResult, from_env
+from hotdata_framework import HotdataClient, ManagedDatabase, QueryResult, from_env
 
 from hotdata_langchain.databases import (
     create_managed_database,
@@ -15,6 +15,7 @@ from hotdata_langchain.databases import (
     load_managed_table,
     load_result_summary,
     managed_database_summary,
+    resolve_database_by_id,
 )
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
@@ -41,6 +42,7 @@ __all__ = [
     "DEFAULT_SEARCH_TOOL_NAME",
     "SCORE_COLUMN",
     "HotdataClient",
+    "ManagedDatabase",
     "QueryResult",
     "__version__",
     "bm25_search_json",
@@ -56,5 +58,6 @@ __all__ = [
     "make_hotdata_search_tool",
     "make_hotdata_tools",
     "managed_database_summary",
+    "resolve_database_by_id",
     "result_rows_for_llm",
 ]

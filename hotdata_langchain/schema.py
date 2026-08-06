@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 
-from hotdata_framework import HotdataClient
+from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import validate_identifier
+from hotdata_langchain.databases import query_scope, resolve_database_by_id
 
 DEFAULT_DESCRIBE_TOOL_NAME = "hotdata_describe_tables"
 
@@ -56,7 +57,7 @@ def describe_tables_json(
     client: HotdataClient,
     *,
     table: str | None = None,
-    database: str | None = None,
+    database: ManagedDatabase | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
 ) -> str:
     """Describe the scoped database's tables, or one table's columns, as JSON.
@@ -66,12 +67,16 @@ def describe_tables_json(
     declaration order, capped at ``max_columns`` so a wide table cannot flood the
     model's context; the payload says so when the cap truncated the list.
 
+    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
+    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+
     Raises ``ValueError`` for a non-positive ``max_columns``.
     """
     if max_columns < 1:
         raise ValueError(f"max_columns must be >= 1, got {max_columns}")
+    scope = query_scope(database)
     if table is None:
-        result = client.execute_sql(table_overview_sql(), database=database)
+        result = client.execute_sql(table_overview_sql(), database=scope)
         tables = [
             {
                 "table": f"{row['table_schema']}.{row['table_name']}",
@@ -84,7 +89,7 @@ def describe_tables_json(
     # One row past the cap, so a table with exactly `max_columns` columns is reported as
     # complete rather than flagged as truncated — telling the model part of the schema is
     # missing is the one thing likely to send it back to guessing.
-    result = client.execute_sql(table_columns_sql(table, limit=max_columns + 1), database=database)
+    result = client.execute_sql(table_columns_sql(table, limit=max_columns + 1), database=scope)
     records = result.to_records()
     if not records:
         return json.dumps(
@@ -117,17 +122,22 @@ def default_describe_description() -> str:
 def make_hotdata_describe_tables_tool(
     client: HotdataClient,
     *,
-    database: str | None = None,
+    database_id: str | ManagedDatabase | None = None,
     name: str = DEFAULT_DESCRIBE_TOOL_NAME,
     description: str | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
 
+    ``database_id`` scopes the introspection to one managed database, by id and never by
+    name; it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip
+    the lookup.
+
     Fails fast on a non-positive ``max_columns`` rather than at first invocation.
     """
     if max_columns < 1:
         raise ValueError(f"max_columns must be >= 1, got {max_columns}")
+    database = resolve_database_by_id(client, database_id) if database_id is not None else None
 
     def hotdata_describe_tables(table: str | None = None) -> str:
         """List the tables in the database, or one table's columns and types."""

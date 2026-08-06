@@ -1,9 +1,42 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from collections.abc import Iterator
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
-from hotdata_framework import QueryResult
+from hotdata_framework import ManagedDatabase, QueryResult
+
+
+@pytest.fixture
+def managed_db() -> ManagedDatabase:
+    """A resolved managed database, as ``resolve_database_by_id`` returns one.
+
+    Query scopes are resolved records rather than id strings, so tests pass this where
+    an id would previously have been threaded through.
+    """
+    return ManagedDatabase(
+        id="dbidsf000000000000000000000001",
+        description="sf_airbnb",
+        default_connection_id="connsf00000000000000000000001",
+    )
+
+
+@pytest.fixture
+def databases_api(managed_db: ManagedDatabase) -> Iterator[MagicMock]:
+    """Patch the raw databases API so an id lookup resolves to ``managed_db``.
+
+    ``GET /databases/{id}`` is the only lookup the package is allowed to make, so tests
+    stub it here and assert against the calls it received.
+    """
+    detail = SimpleNamespace(
+        id=managed_db.id,
+        name=managed_db.description,
+        default_connection_id=managed_db.default_connection_id,
+    )
+    with patch("hotdata_langchain.databases.DatabasesApi") as api:
+        api.return_value.get_database.return_value = detail
+        yield api
 
 
 @pytest.fixture

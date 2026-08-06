@@ -29,7 +29,9 @@ import hotdata_langchain as hl
 
 PARQUET_URL = "https://www.hotdata.dev/data/sf-airbnb-listings.parquet"
 USER_AGENT = "hotdata-langchain-demo"
-DATABASE = "langchain_bm25_demo"
+#: Display label for the database this demo creates. Not an identifier — see
+#: `ensure_database`, which addresses the database by id once it has one.
+DATABASE_LABEL = "langchain_bm25_demo"
 SCHEMA = "public"
 TABLE = "listings"
 SEARCH_COLUMN = "description"
@@ -88,33 +90,45 @@ def download_parquet() -> Path:
     return path
 
 
-def find_database(client: hl.HotdataClient, name: str) -> Any | None:
+def find_database_by_label(client: hl.HotdataClient, label: str) -> Any | None:
+    """Scan the workspace for a database carrying this display label.
+
+    Bootstrap convenience for a re-runnable demo, and the only by-label lookup here.
+    Labels are not unique, so this is not how an application should find its database —
+    pass `--database-id` to bind one by id instead.
+    """
     for db in client.list_managed_databases():
-        if db.description == name or db.id == name:
+        if db.description == label:
             return db
     return None
 
 
-def ensure_database(client: hl.HotdataClient) -> Any:
-    existing = find_database(client, DATABASE)
+def ensure_database(client: hl.HotdataClient, database_id: str | None) -> Any:
+    """Return the demo's managed database record, bound by id or created."""
+    if database_id:
+        db = hl.resolve_database_by_id(client, database_id)
+        print(f"Bound managed database {db.id} by id (label={db.description!r})")
+        return db
+
+    existing = find_database_by_label(client, DATABASE_LABEL)
     if existing is not None:
-        print(f"Reusing managed database {DATABASE!r} (id={existing.id})")
+        print(f"Reusing managed database {existing.id} (label={DATABASE_LABEL!r})")
         return existing
-    db = client.create_managed_database(description=DATABASE, schema=SCHEMA, tables=[TABLE])
-    print(f"Created managed database {DATABASE!r} (id={db.id}) with {SCHEMA}.{TABLE} declared")
+
+    db = client.create_managed_database(description=DATABASE_LABEL, schema=SCHEMA, tables=[TABLE])
+    print(f"Created managed database {db.id} (label={DATABASE_LABEL!r}) with {SCHEMA}.{TABLE}")
+    print(f"  Pin it for later runs with --database-id {db.id} (or DEMO_DATABASE_ID)")
     return db
 
 
-def load_listings(client: hl.HotdataClient, parquet: Path) -> None:
-    loaded = client.load_managed_table(DATABASE, TABLE, schema=SCHEMA, file=str(parquet))
+def load_listings(client: hl.HotdataClient, db: Any, parquet: Path) -> None:
+    loaded = client.load_managed_table(db, TABLE, schema=SCHEMA, file=str(parquet))
     print(f"Loaded {loaded.row_count} rows into {loaded.full_name}")
 
 
-def table_columns(client: hl.HotdataClient) -> list[str]:
+def table_columns(client: hl.HotdataClient, db: Any) -> list[str]:
     """Return the table's column names, through the same tool the agent gets."""
-    described = json.loads(
-        hl.describe_tables_json(client, table=f"{SCHEMA}.{TABLE}", database=DATABASE)
-    )
+    described = json.loads(hl.describe_tables_json(client, table=f"{SCHEMA}.{TABLE}", database=db))
     return [column["name"] for column in described["columns"]]
 
 
@@ -250,6 +264,12 @@ def main() -> None:
         help="tool-calling model for the agent step, e.g. '<provider>:<model>' "
         "(or set DEMO_MODEL); the agent step is skipped without one",
     )
+    parser.add_argument(
+        "--database-id",
+        default=os.environ.get("DEMO_DATABASE_ID"),
+        help="bind an existing managed database by id (or set DEMO_DATABASE_ID); "
+        "without one the demo reuses or creates its own and prints the id to pin",
+    )
     parser.add_argument("--skip-agent", action="store_true", help="stop after direct tool use")
     parser.add_argument("--reload", action="store_true", help="reload the parquet even if loaded")
     parser.add_argument(
@@ -261,18 +281,22 @@ def main() -> None:
     print(f"Connected to {client.host} (workspace={client.workspace_id})")
 
     if args.cleanup:
-        existing = find_database(client, DATABASE)
-        if existing is None:
-            print(f"No managed database named {DATABASE!r} to delete")
+        target = (
+            hl.resolve_database_by_id(client, args.database_id)
+            if args.database_id
+            else find_database_by_label(client, DATABASE_LABEL)
+        )
+        if target is None:
+            print(f"No managed database labelled {DATABASE_LABEL!r} to delete")
         else:
-            client.delete_managed_database(existing.id)
-            print(f"Deleted managed database {DATABASE!r} (id={existing.id})")
+            client.delete_managed_database(target)
+            print(f"Deleted managed database {target.id} (label={target.description!r})")
         client.close()
         return
 
     try:
         step("1. Managed database")
-        db = ensure_database(client)
+        db = ensure_database(client, args.database_id)
 
         step("2. Listings data")
         already_loaded = False
@@ -280,20 +304,20 @@ def main() -> None:
             # Probing with a row read rather than COUNT(*): the engine rejects a
             # projection that is aggregates only.
             try:
-                probe = client.execute_sql(f"SELECT id FROM {TABLE_REF} LIMIT 1", database=DATABASE)
+                probe = client.execute_sql(f"SELECT id FROM {TABLE_REF} LIMIT 1", database=db)
                 already_loaded = bool(probe.rows)
                 if already_loaded:
                     print(f"{TABLE_REF} already holds data; skipping load (--reload to force)")
             except Exception as e:
                 print(f"Table not queryable yet ({type(e).__name__}); loading fixture")
         if not already_loaded:
-            load_listings(client, download_parquet())
+            load_listings(client, db, download_parquet())
 
         step("3. BM25 index")
         ensure_bm25_index(client, db.default_connection_id)
 
         step("4. Tools")
-        available = table_columns(client)
+        available = table_columns(client, db)
         columns = [c for c in PREFERRED_COLUMNS if c in available]
         if SEARCH_COLUMN not in columns:
             columns.append(SEARCH_COLUMN)
@@ -301,7 +325,8 @@ def main() -> None:
 
         tools = hl.make_hotdata_tools(
             client,
-            database=DATABASE,
+            # The resolved record, so the tool set does not re-look-up what step 1 has.
+            database_id=db,
             # Not args.k: max_rows also caps the SQL tool, and the agent's aggregate in
             # step 6 groups over whole neighbourhoods, which a search-sized budget would
             # silently truncate. Search hits and SQL rows are different budgets.

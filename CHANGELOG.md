@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `resolve_database_by_id` — fetches a managed database record by id (`GET /databases/{id}`)
+  with no by-name fallback, and returns an already-resolved `ManagedDatabase` untouched.
+  `ManagedDatabase` is re-exported for callers that hold one.
+
 - Full-text search tool backed by the engine's BM25 index. `make_hotdata_tools` grows
   `search_table`/`search_column`/`search_columns`/`search_k`/`search_tool_name` and appends a
   `hotdata_search_text` tool when a table and column are given; `make_hotdata_search_tool`
@@ -30,6 +34,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: managed databases are addressed by id, never by name.** A Hotdata database name
+  is a display label and is not unique, so a by-name lookup can resolve to the wrong database
+  — and then every query, load and drop follows it there. The agent-facing
+  `hotdata_load_managed_table` made that reachable from an LLM, where a wrong target means a
+  replacing load overwrites another database's table.
+  - `make_hotdata_tools`, `make_hotdata_search_tool` and `make_hotdata_describe_tables_tool`
+    take `database_id=` in place of `database=`. It accepts an id, or a `ManagedDatabase` to
+    skip the lookup. The id is resolved once when the tools are built, so a bad id fails
+    there rather than on the agent's first query, and queries no longer pay a repeat lookup.
+  - The `hotdata_load_managed_table` tool's `database` argument is now `database_id`, and its
+    description names the two tools that hand out ids.
+  - `load_managed_table` takes `database_id=`; `execute_sql_json`, `bm25_search_json` and
+    `describe_tables_json` take a resolved `ManagedDatabase` as `database=` and raise
+    `TypeError` on a string, which would otherwise reach the framework's by-name fallback.
+  - Passing a name anywhere raises `KeyError`, naming `hotdata_list_managed_databases` as
+    where ids come from.
+
+  Mirrors `hotdata-dlt-destination`'s move to id-only addressing. To scope tools to the same
+  database as before, pass its id: `client.list_managed_databases()` reports one per database.
 - Tool descriptions now state the engine's actual contract instead of a one-line summary.
   `hotdata_execute_sql` names the dialect and the supported constructs, points at the search
   tool for text relevance when one is registered, and warns that an aggregate query must

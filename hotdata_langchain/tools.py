@@ -6,7 +6,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, QueryResult
+from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, ManagedDatabase, QueryResult
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain.databases import (
@@ -15,6 +15,8 @@ from hotdata_langchain.databases import (
     load_managed_table,
     load_result_summary,
     managed_database_summary,
+    query_scope,
+    resolve_database_by_id,
 )
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
@@ -83,9 +85,14 @@ def execute_sql_json(
     sql: str,
     *,
     max_rows: int = 100,
-    database: str | None = None,
+    database: ManagedDatabase | None = None,
 ) -> str:
-    result = client.execute_sql(sql, database=database)
+    """Run SQL scoped to an already-resolved managed database and return JSON.
+
+    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
+    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+    """
+    result = client.execute_sql(sql, database=query_scope(database))
     payload = {
         "metadata": result.metadata_dict(),
         "rows": result.to_records(max_rows=max_rows),
@@ -97,7 +104,7 @@ def make_hotdata_tools(
     client: HotdataClient,
     *,
     max_rows: int = 100,
-    database: str | None = None,
+    database_id: str | ManagedDatabase | None = None,
     search_table: str | None = None,
     search_column: str | None = None,
     search_columns: Sequence[str] | None = None,
@@ -106,6 +113,13 @@ def make_hotdata_tools(
     describe_tables: bool = True,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and managed database workflows.
+
+    ``database_id`` scopes every query these tools run to one managed database. It is a
+    database id, never a name: names are display labels and are not unique. The id is
+    resolved once here and the resolved record is what each query carries, so a
+    non-existent id fails at build time rather than on the agent's first query. Pass an
+    already-resolved ``ManagedDatabase`` to skip the lookup. Ids come from
+    ``client.list_managed_databases()`` or the ``hotdata_list_managed_databases`` tool.
 
     ``describe_tables`` (on by default) adds a schema-introspection tool, so the agent
     can look up tables and columns instead of guessing them. It reads
@@ -122,6 +136,8 @@ def make_hotdata_tools(
     """
     if (search_table is None) != (search_column is None):
         raise ValueError("search_table and search_column must be provided together")
+
+    database = resolve_database_by_id(client, database_id) if database_id is not None else None
 
     def hotdata_execute_sql(sql: str) -> str:
         """Run SQL against the Hotdata workspace and return JSON rows."""
@@ -147,7 +163,7 @@ def make_hotdata_tools(
         return json.dumps(managed_database_summary(db), indent=2)
 
     def hotdata_load_managed_table(
-        database: str,
+        database_id: str,
         table: str,
         file: str,
         schema_name: str = DEFAULT_SCHEMA,
@@ -155,7 +171,7 @@ def make_hotdata_tools(
         """Load a local parquet file into a declared managed table."""
         loaded = load_managed_table(
             client,
-            database=database,
+            database_id=database_id,
             table=table,
             file=file,
             schema=schema_name or DEFAULT_SCHEMA,
@@ -178,7 +194,9 @@ def make_hotdata_tools(
             description=(
                 "List the managed databases in this workspace. Returns each database's "
                 "'id' and its human-readable 'description'. Names are display labels and "
-                "are not unique — pass the 'id' to other tools, never the description."
+                "are not unique — pass the 'id' to other tools, never the description. "
+                "An id cannot be guessed or built from a name; it only comes from here or "
+                "from creating a database."
             ),
         ),
         StructuredTool.from_function(
@@ -186,9 +204,10 @@ def make_hotdata_tools(
             name="hotdata_create_managed_database",
             description=(
                 "Create a managed database to hold tables you load. 'name' is a display "
-                "label; the response carries the 'id' to use with the other tools. Declare "
-                "the tables you intend to load up front as a comma- or newline-separated "
-                "list, so data loads straight into them."
+                "label only and is not an identifier; the response carries the 'id', which "
+                "is what every other tool needs — keep it. Declare the tables you intend "
+                "to load up front as a comma- or newline-separated list, so data loads "
+                "straight into them."
             ),
         ),
         StructuredTool.from_function(
@@ -197,14 +216,18 @@ def make_hotdata_tools(
             description=(
                 "Load a parquet file from the local filesystem into a table that was "
                 "declared on a managed database, replacing whatever the table held. "
-                "'database' should be a database id. Only local parquet paths are "
-                "accepted — not URLs, and not other file formats."
+                "'database_id' must be a database id returned by "
+                "hotdata_list_managed_databases or hotdata_create_managed_database — call "
+                "one of those first if you do not have an id. A database name is rejected: "
+                "names are not unique, and this load overwrites the table, so the wrong "
+                "target would destroy data. Only local parquet paths are accepted — not "
+                "URLs, and not other file formats."
             ),
         ),
     ]
 
     if describe_tables:
-        tools.append(make_hotdata_describe_tables_tool(client, database=database))
+        tools.append(make_hotdata_describe_tables_tool(client, database_id=database))
 
     if has_search:
         assert search_table is not None and search_column is not None
@@ -217,7 +240,7 @@ def make_hotdata_tools(
                 k=search_k,
                 name=search_tool_name,
                 max_rows=max_rows,
-                database=database,
+                database_id=database,
             )
         )
 

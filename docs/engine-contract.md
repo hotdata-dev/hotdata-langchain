@@ -97,7 +97,9 @@ discover which columns are searchable, and why the search tool pins its corpus.
   translates "an attachment alias or `default`", so attachment is presumably the supported route
   — **not verified here**.
 - **Database names are not unique.** `name` is a display label; `resolve_managed_database` tries
-  the id first and then scans `list_databases()` matching on name. Ids are the only safe handle.
+  the id first and then scans `list_databases()` matching on name. Ids are the only safe handle,
+  so this package never calls that resolver: `resolve_database_by_id` goes straight to
+  `GET /databases/{id}`, and a resolved `ManagedDatabase` is what scopes every query.
 - **`from_env()` picks a workspace silently** when `HOTDATA_WORKSPACE` is unset — first active,
   else first overall, no warning. `HotdataClient(api_key, workspace_id)` takes it explicitly.
 

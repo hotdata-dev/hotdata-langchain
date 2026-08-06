@@ -24,6 +24,10 @@ The script is safe to re-run: it reuses the managed database, skips the load whe
 table already has rows, and reuses an existing index.
 
 ```bash
+# bind an existing managed database by id instead of letting the demo find its own
+uv run --group demo --env-file .env python demo/bm25_search_demo.py \
+    --database-id dbid...
+
 # different search text, more hits
 uv run --group demo --env-file .env python demo/bm25_search_demo.py \
     --query "quiet garden studio near the park" --k 10
@@ -45,6 +49,7 @@ LANGSMITH_TRACING=true LANGSMITH_PROJECT=hotdata-langchain-bm25 \
 |---|---|---|
 | `HOTDATA_API_KEY` | steps 1–5 | everything except the agent run |
 | `HOTDATA_WORKSPACE` | optional | pins a workspace; first available otherwise |
+| `DEMO_DATABASE_ID` | optional | pins the managed database by id (same as `--database-id`) |
 | your model provider's key | step 6 | skipped without it, or without `--model` |
 | `LANGSMITH_API_KEY` + `LANGSMITH_TRACING=true` | optional | traces the run to LangSmith |
 | `LANGSMITH_PROJECT` | optional | project the traces land in (default: `default`) |
@@ -60,8 +65,12 @@ and SQL are both inspectable after the fact.
 
 ## What each step does
 
-1. **Managed database** — creates `langchain_bm25_demo` with `public.listings` declared
-   up front, so the load materialises into it directly.
+1. **Managed database** — binds the database given by `--database-id`, or else creates one
+   labelled `langchain_bm25_demo` with `public.listings` declared up front, so the load
+   materialises into it directly. Everything downstream addresses the resolved record, so
+   the label never selects the target; the create path prints the new id to pin. Finding a
+   previous run's database by its label is the one by-label lookup here, and it exists only
+   so the demo is re-runnable without pinning — pass `--database-id` to skip it.
 2. **Listings data** — downloads the fixture parquet (cached in the system temp dir) and
    loads it into the managed table.
 3. **BM25 index** — creates a `bm25` index on `description` through `IndexesApi` and
@@ -83,16 +92,17 @@ and SQL are both inspectable after the fact.
    Set the model with `--model` or `DEMO_MODEL`; any tool-calling model works, and the
    step is skipped when its provider key is absent.
 
-   **What this step demonstrates is the routing.** Across five runs of the current
-   configuration the agent called the search tool and the schema tool every time, and the
-   final table matched the whole-neighbourhood figures every time. Two of those runs also
-   recovered from a bad query after the error was handed back to them.
+   **What this step demonstrates is the routing, and only the routing.** Across five runs
+   the agent called the search tool and the schema tool every time, in either order. That
+   part is what the tools are responsible for, and it holds.
 
-   Do not read five runs as a guarantee. Answering a compound question correctly is a
-   property of the model rather than of these tools, and an earlier configuration — which
-   shared one row budget between the search and SQL tools, silently truncating the
-   aggregate — got it right in only four of five. The printed tool calls are the reliable
-   part; treat the prose answer as illustrative.
+   The prose answer is a different matter: the final table matched the true
+   whole-neighbourhood figures in three of five runs. The two failures were the model
+   aggregating over the handful of listings search returned instead of over every listing
+   in those neighbourhoods, and a join that inflated the counts. Five runs on the merged
+   `main`, measured the same way against the same ground-truth query, also gave three of
+   five — so this is the model's ceiling on a compound question, not something these tools
+   introduced or can fix. Read the printed tool calls, not the table.
 
 ## What makes the agent run work
 

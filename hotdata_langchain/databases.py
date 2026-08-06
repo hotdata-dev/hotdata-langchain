@@ -5,12 +5,62 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from hotdata.api.databases_api import DatabasesApi
+from hotdata.exceptions import ApiException
 from hotdata_framework import (
     DEFAULT_SCHEMA,
     HotdataClient,
     LoadManagedTableResult,
     ManagedDatabase,
 )
+from hotdata_framework.databases import api_error_message, managed_database_from_detail
+
+
+def resolve_database_by_id(
+    client: HotdataClient,
+    database_id: str | ManagedDatabase,
+) -> ManagedDatabase:
+    """Fetch a managed database record by id (``GET /databases/{id}``).
+
+    Addresses the database by id only. A Hotdata database name is a display label and is
+    not unique, so there is deliberately no by-name fallback: a name that collides with
+    another database's label would otherwise resolve to the wrong database, and every
+    query, load and drop would follow it there. Ids come from
+    :func:`list_managed_databases_json` or :func:`create_managed_database`.
+
+    An already-resolved ``ManagedDatabase`` is returned as-is, so a caller holding one
+    pays no lookup.
+
+    Raises ``KeyError`` when the workspace has no database with that id.
+    """
+    if isinstance(database_id, ManagedDatabase):
+        return database_id
+    try:
+        detail = DatabasesApi(client.api).get_database(database_id)
+    except ApiException as e:
+        if e.status == 404:
+            raise KeyError(
+                f"no managed database with id {database_id!r} in this workspace. "
+                "Ids are listed by hotdata_list_managed_databases; a database name is "
+                "not accepted here, because names are not unique."
+            ) from e
+        raise RuntimeError(api_error_message(e)) from e
+    return managed_database_from_detail(detail)
+
+
+def query_scope(database: ManagedDatabase | None) -> ManagedDatabase | None:
+    """Return ``database`` unchanged, rejecting a scope that was never resolved.
+
+    A string reaching ``HotdataClient`` would go through its name-or-id resolver, whose
+    by-name fallback matches a non-unique display label. Resolve with
+    :func:`resolve_database_by_id` first.
+    """
+    if database is None or isinstance(database, ManagedDatabase):
+        return database
+    raise TypeError(
+        f"database must be a resolved ManagedDatabase, got {type(database).__name__}; "
+        "resolve it with resolve_database_by_id(client, database_id) first"
+    )
 
 
 def list_managed_databases_json(client: HotdataClient) -> str:
@@ -32,17 +82,29 @@ def create_managed_database(
     schema: str = DEFAULT_SCHEMA,
     tables: list[str] | None = None,
 ) -> ManagedDatabase:
+    """Create a managed database, labelled ``name``.
+
+    ``name`` is a display label only; address the result by its ``id`` from here on.
+    """
     return client.create_managed_database(description=name, schema=schema, tables=tables)
 
 
 def load_managed_table(
     client: HotdataClient,
     *,
-    database: str,
+    database_id: str | ManagedDatabase,
     table: str,
     file: str,
     schema: str = DEFAULT_SCHEMA,
 ) -> LoadManagedTableResult:
+    """Load a local parquet file into a declared table of the database with that id.
+
+    ``database_id`` is resolved by id (see :func:`resolve_database_by_id`) and the
+    resolved record is what addresses the load, so a display label never selects the
+    target. This load replaces the table's contents, which is why addressing it
+    unambiguously matters.
+    """
+    database = resolve_database_by_id(client, database_id)
     return client.load_managed_table(database, table, schema=schema, file=file)
 
 
