@@ -236,14 +236,26 @@ on an undeclared filter key or a malformed id; `delete` requiring `ids`; `from_t
 round-tripping end to end; MMR selecting the embedding column and calling into
 `maximal_marginal_relevance` with the right shapes.
 
-**Live verification** (once real credentials or a local cluster are available — not part of
-this repo's CI): round-trip `add_texts`/`similarity_search` against a real workspace with a
-real embedding; `EXPLAIN` the primary query before and after provisioning a matching-metric
-index, confirming the plan shows the USearch-rewritten node. Since `runtimedb` PR #953 is now
-merged and live in production, this is no longer blocked on a pending deploy — it's now
-directly verifiable once `HotdataVectorStore` itself exists, rather than a claim asserted from
-a sibling repo's spike. `EXPLAIN` a `WHERE`-filtered query to settle whether filtered queries
-still hit the fast path.
+**Live verification.** Done for Phase 1 on 2026-08-06 against the production workspace, via
+`demo/vectorstore_demo.py` (database `dbidh4tn5esw2roy7zg4sh1fqv8rov`). Confirmed working:
+the `list<float32>` embedding column round-trips through `load_managed_table`; a
+1536-dimension `ARRAY[...]` literal in `cosine_distance(embedding, ARRAY[...])` is accepted
+and ranks sensibly; the `WHERE` predicate filters inside the ranking query; `mode="upsert"`
+with `key=["id"]` leaves 8 rows after two runs of 8 documents; `mode="delete"` accepts a
+parquet carrying **only** the key column and removes the row; deleting an absent id is a
+no-op; `get_by_ids` skips ids that are not present; and `as_retriever()` composes into an
+LCEL retrieval chain that answers from retrieved context.
+
+One constraint surfaced that the design had not anticipated: **an upsert must carry every
+column the table has** (`upload is missing column '<name>'`). So `metadata_columns` has to
+match the table a store is opened against — pointing a differently-configured store at an
+existing table fails on the first write rather than silently writing partial rows. Documented
+in the class docstring and README.
+
+Still outstanding: `EXPLAIN` the primary query before and after provisioning a
+matching-metric index to confirm the plan shows the USearch-rewritten node, and `EXPLAIN` a
+`WHERE`-filtered query to settle whether filtered queries still reach the fast path. Both need
+an index, so they belong with Phase 3.
 
 ## Phasing
 

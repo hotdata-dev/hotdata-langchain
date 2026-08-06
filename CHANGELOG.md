@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HotdataVectorStore` — an implementation of LangChain's `VectorStore` backed by a managed
+  table, so Hotdata works as the retrieval backend for any retriever, chain or eval built on
+  that interface. Covers `add_texts`/`add_documents`, the four `similarity_search*` variants,
+  `get_by_ids`, `delete` and `from_texts`, plus equality filtering on metadata keys declared
+  as `metadata_columns`.
+
+  Searches compile to a single `ORDER BY <distance_fn>(embedding, ARRAY[...]) ASC LIMIT k`
+  query using the engine's scalar distance functions. That is correct with no index at all and
+  is rewritten into an HNSW index lookup once a matching-metric vector index exists, so one
+  code path serves both and a new store is usable immediately.
+
+  `database_id` is required and addressed by id; it is resolved once at construction and every
+  read and write afterwards addresses the resolved record. `delete` requires ids.
+
+  Validated against LangChain's published conformance suite (`langchain-tests`) in addition to
+  the package's own tests.
+
+- `pyarrow` is now a declared dependency. It was already installed as a transitive dependency
+  of `hotdata-framework`; the vector store imports it directly, so it is declared directly.
 
 ## [0.3.0] - 2026-08-06
 

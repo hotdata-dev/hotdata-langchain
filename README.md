@@ -145,6 +145,84 @@ Provisioning the index itself is not yet part of this package; create it through
 API or CLI. `demo/` has a script that does the whole flow — managed database, data load, BM25
 index, then an agent that picks between search and SQL.
 
+## Vector store
+
+`HotdataVectorStore` implements LangChain's `VectorStore`, so Hotdata works as the retrieval
+backend for any retriever, chain or eval built on that interface:
+
+```python
+from langchain_openai import OpenAIEmbeddings
+
+store = hl.HotdataVectorStore(
+    client,
+    OpenAIEmbeddings(model="text-embedding-3-small"),
+    database_id="dbid...",
+    table="documents",
+)
+
+store.add_texts(
+    ["Cozy studio with great light", "Two-bedroom near the park"],
+    [{"city": "sf"}, {"city": "nyc"}],
+)
+
+docs = store.similarity_search("somewhere bright to stay", k=3)
+answer = store.as_retriever(search_kwargs={"k": 3})
+```
+
+Rows are stored in one managed table keyed on `id`, so re-adding a document with an existing
+id replaces it rather than duplicating it. `delete(ids=[...])` requires ids — there is no
+delete-everything call.
+
+The store declares that table itself. If you pre-create the database, leave the table out of
+`tables=[...]` and let the store declare it, or declare it with `key=["id"]` yourself — a
+managed table with no key takes writes as appends, so re-adding a document would duplicate it,
+and an existing table's key cannot be read back to warn you.
+
+Searches run as a single SQL query using the engine's scalar distance functions:
+
+```sql
+SELECT id, content, metadata_json,
+       cosine_distance(embedding, ARRAY[...]) AS dist
+FROM "default"."public"."documents"
+ORDER BY dist ASC
+LIMIT 4
+```
+
+That query is correct with **no index at all** — it brute-forces the table — and is rewritten
+into an HNSW index lookup once a matching-metric vector index exists on the embedding column,
+without the query or your code changing. So a store is usable the moment you create it, and
+gets faster later. (Provisioning the index is not yet part of this package; create it through
+the Hotdata API or CLI, matching the metric to the `distance=` you configured.)
+
+`distance=` accepts `"cosine"` (default), `"l2"` and `"dot"`. Prefer `cosine`: its relevance
+score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean
+relevance score expects true Euclidean distance, so `similarity_search_with_relevance_scores`
+under `l2` returns scores on the wrong scale. Ranking is correct under all three.
+
+### Filtering on metadata
+
+Metadata always round-trips in full. To *filter* on a key, declare it up front so it is stored
+as a real typed column:
+
+```python
+store = hl.HotdataVectorStore(
+    client,
+    embeddings,
+    database_id="dbid...",
+    metadata_columns={"city": "string", "beds": "int"},
+)
+
+store.similarity_search("bright and quiet", k=3, filter={"city": "sf"})
+```
+
+Equality only, for now. Filtering on an undeclared key raises `ValueError` rather than quietly
+returning unfiltered results. The predicate goes into the search query itself, not around it —
+filtering *after* a top-k selection can only shrink the result, never re-fill it back to `k`.
+
+`metadata_columns` has to match the table it points at. An upsert must carry every column the
+table has, so opening an existing store with different promoted columns fails on the first
+write with `upload is missing column '<name>'`.
+
 ## Scoping queries to a managed database
 
 `database_id=` scopes all SQL the agent runs to one managed database. The API requires a
@@ -185,8 +263,10 @@ uv run python examples/langchain_basic.py
 uv run python examples/langchain_managed_db.py
 ```
 
-For a full end-to-end run against a real workspace — data load, BM25 index build, then an
-agent choosing between search and SQL — see [`demo/`](demo/README.md).
+For full end-to-end runs against a real workspace, see [`demo/`](demo/README.md): one takes a
+workspace from empty through a data load and BM25 index build to an agent choosing between
+search and SQL; the other writes embedded documents into a managed table and answers a
+question with a stock LangChain retrieval chain over `HotdataVectorStore`.
 
 ## Development
 
