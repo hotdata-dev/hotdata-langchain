@@ -1,6 +1,6 @@
 # hotdata-langchain
 
-Give your [LangChain](https://python.langchain.com/) agents access to [Hotdata](https://hotdata.dev) — run SQL against your workspace connections, full-text search indexed columns, and work with managed databases.
+Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, full-text search indexed columns and work with managed databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
 
 ## Install
 
@@ -14,9 +14,10 @@ Set `HOTDATA_API_KEY` in your environment. Optionally set `HOTDATA_WORKSPACE` to
 
 ## Quickstart
 
-The package itself depends only on `langchain-core`, and works with any tool-calling model.
-Running an agent additionally needs the `langchain` package and the integration for whichever
-model provider you use.
+Of the LangChain packages, this one needs only `langchain-core`, and works with any
+tool-calling model. Running an agent additionally needs the `langchain` package and the
+integration for whichever model provider you use; using `HotdataVectorStore` needs an
+embedding provider's integration, such as `langchain-openai`.
 
 ```python
 from langchain.agents import create_agent
@@ -148,7 +149,11 @@ index, then an agent that picks between search and SQL.
 ## Vector store
 
 `HotdataVectorStore` implements LangChain's `VectorStore`, so Hotdata works as the retrieval
-backend for any retriever, chain or eval built on that interface:
+backend for any retriever, chain or eval built on that interface.
+
+It is a primitive, not a tool — it is not part of `make_hotdata_tools` and an agent never calls
+it directly. You compose it into a chain, or hand `as_retriever()` to something that expects a
+retriever:
 
 ```python
 from langchain_openai import OpenAIEmbeddings
@@ -166,7 +171,7 @@ store.add_texts(
 )
 
 docs = store.similarity_search("somewhere bright to stay", k=3)
-answer = store.as_retriever(search_kwargs={"k": 3})
+retriever = store.as_retriever(search_kwargs={"k": 3})   # composes into any chain
 ```
 
 Rows are stored in one managed table keyed on `id`, so re-adding a document with an existing
@@ -188,11 +193,20 @@ ORDER BY dist ASC
 LIMIT 4
 ```
 
-That query is correct with **no index at all** — it brute-forces the table — and is rewritten
-into an HNSW index lookup once a matching-metric vector index exists on the embedding column,
-without the query or your code changing. So a store is usable the moment you create it, and
-gets faster later. (Provisioning the index is not yet part of this package; create it through
-the Hotdata API or CLI, matching the metric to the `distance=` you configured.)
+That query is correct with **no index at all** — it brute-forces the table — so a store is
+usable the moment you create it. Today every search is a full scan.
+
+It is also written to match the shape the engine's optimizer rewrites into an HNSW index
+lookup: a plain column, a literal `ARRAY[...]`, `ASC`, a `LIMIT`, no vector column in the
+output, and an index built on the same metric. The intent is that the same query gets faster
+once such an index exists, with nothing in your code changing. **That rewrite has not yet been
+confirmed end to end for these queries** — the conditions come from reading the engine's
+optimizer rule, and verifying it needs an index this package cannot yet create. Tracked in
+[`docs/vectorstore-plan.md`](docs/vectorstore-plan.md); until then, treat the fast path as the
+design intent rather than a measured property.
+
+Provisioning an index is not part of this package yet; create one through the Hotdata API or
+CLI, matching its metric to the `distance=` you configured.
 
 `distance=` accepts `"cosine"` (default), `"l2"` and `"dot"`. Prefer `cosine`: its relevance
 score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean
@@ -261,6 +275,9 @@ tools = hl.make_hotdata_tools(client, max_rows=50)
 ```bash
 uv run python examples/langchain_basic.py
 uv run python examples/langchain_managed_db.py
+
+# needs an embedding provider key and the langchain-openai integration
+uv run --group demo python examples/langchain_vectorstore.py
 ```
 
 For full end-to-end runs against a real workspace, see [`demo/`](demo/README.md): one takes a
