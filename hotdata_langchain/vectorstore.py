@@ -83,8 +83,8 @@ class HotdataVectorStore(VectorStore):
         ORDER BY dist ASC
         LIMIT k
 
-    That shape is correct with no index at all — brute force over the table, which is
-    what every search does today. It is also written to match the shape the engine's
+    That shape is correct with no index at all: it brute-forces the table, which is what
+    every search does today. It is also written to match the shape the engine's
     optimizer rewrites into an HNSW index lookup, so the same query should get faster
     once a matching-metric index exists on the embedding column, with nothing here
     changing. That rewrite is not yet confirmed for these queries: its conditions come

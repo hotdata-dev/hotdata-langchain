@@ -209,9 +209,9 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
 4. **Similarity search** — prints hits with their raw cosine distances. This runs with **no
    vector index**: the scalar `cosine_distance` UDF brute-forces the table, which is correct
    from row one. The same query is written to match the shape the engine's optimizer rewrites
-   into an HNSW index lookup, so it should get faster once a matching-metric index exists with
-   nothing in the code changing — though that rewrite has not yet been confirmed for these
-   queries, and confirming it needs an index this package cannot create yet.
+   into an HNSW index lookup, so it should get faster once a matching-metric index exists, with
+   nothing in the code changing. That rewrite has not yet been confirmed for these queries, and
+   confirming it needs an index this package cannot create yet.
 5. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
    the ranking query's `WHERE`, not around its result, so the filter still returns the top `k`
    *matching* rows rather than whatever survives filtering an already-chosen top `k`.
