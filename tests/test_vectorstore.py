@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
-from hotdata_framework import ManagedDatabase
+from hotdata_framework import ManagedDatabase, ManagedTable
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.vectorstores import VectorStore
 
@@ -38,6 +38,19 @@ def store(
         DeterministicFakeEmbedding(size=EMBEDDING_SIZE),
         database_id=managed_db.id,
         metadata_columns={"city": "string", "beds": "int", "rating": "float", "live": "bool"},
+    )
+
+
+def _build_store(
+    client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    **kwargs: Any,
+) -> HotdataVectorStore:
+    return HotdataVectorStore(
+        client,  # type: ignore[arg-type]
+        DeterministicFakeEmbedding(size=EMBEDDING_SIZE),
+        database_id=managed_db.id,
+        **kwargs,
     )
 
 
@@ -130,6 +143,68 @@ def test_table_is_declared_keyed_on_id(store: HotdataVectorStore) -> None:
     ]
 
 
+def test_existing_table_is_not_redeclared(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+) -> None:
+    _build_store(fake_client, managed_db)
+    _build_store(fake_client, managed_db)
+    assert len(fake_client.declared) == 1
+
+
+def test_declaration_failure_is_not_swallowed(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+) -> None:
+    """A store that cannot declare its keyed table would append instead of upsert.
+
+    The client reports a permission failure and an already-declared table as the same
+    RuntimeError, so a blanket catch here would construct a store that looks correctly
+    keyed and duplicates every row it writes.
+    """
+    fake_client.add_managed_table = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("Forbidden")
+    )
+    with pytest.raises(RuntimeError, match="Forbidden"):
+        _build_store(fake_client, managed_db)
+
+
+def test_losing_a_declaration_race_is_tolerated(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+) -> None:
+    """The table is absent when checked, then present once the failed declare returns."""
+    declared = ManagedTable(
+        full_name=f"{managed_db.id}.public.vectors",
+        schema="public",
+        table="vectors",
+        synced=False,
+        last_sync=None,
+    )
+    fake_client.list_managed_tables = MagicMock(side_effect=[[], [declared]])  # type: ignore[method-assign]
+    fake_client.add_managed_table = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("already exists")
+    )
+    _build_store(fake_client, managed_db)
+
+
+def test_supplied_ids_are_preserved_and_missing_ones_generated(
+    store: HotdataVectorStore,
+) -> None:
+    written = store.add_texts(["a", "b"], ids=["mine", None])  # type: ignore[list-item]
+    assert written[0] == "mine"
+    assert written[1] and written[1] != "mine"
+
+
+def test_empty_id_is_rejected_rather_than_replaced(store: HotdataVectorStore) -> None:
+    """An empty id is a caller mistake, not an absent id to fill in."""
+    with pytest.raises(ValueError, match="document ids must not be empty"):
+        store.add_texts(["a"], ids=[""])
+
+
 def test_writes_are_upserts(store: HotdataVectorStore) -> None:
     store.add_texts(["a"])
     client: FakeHotdataClient = store._client  # type: ignore[assignment]
@@ -175,6 +250,23 @@ def test_undeclared_metadata_keys_are_stored_but_not_promoted(store: HotdataVect
 def test_promoted_value_of_the_wrong_type_is_rejected(store: HotdataVectorStore) -> None:
     with pytest.raises(ValueError, match="declared 'int' but got str"):
         store.add_texts(["a"], [{"beds": "two"}])
+
+
+def test_a_bool_is_not_accepted_by_an_int_column(store: HotdataVectorStore) -> None:
+    """bool subclasses int, so a plain isinstance check would store True as 1 here
+    while metadata_json kept true — one key disagreeing with itself."""
+    with pytest.raises(ValueError, match="declared 'int' but got bool"):
+        store.add_texts(["a"], [{"beds": True}])
+
+
+def test_a_bool_is_not_accepted_by_a_float_column(store: HotdataVectorStore) -> None:
+    with pytest.raises(ValueError, match="declared 'float' but got bool"):
+        store.add_texts(["a"], [{"rating": True}])
+
+
+def test_a_bool_column_still_accepts_bools(store: HotdataVectorStore) -> None:
+    store.add_texts(["a"], [{"live": True}], ids=["one"])
+    assert store.get_by_ids(["one"])[0].metadata == {"live": True}
 
 
 def test_mismatched_metadatas_length_is_rejected(store: HotdataVectorStore) -> None:
@@ -324,6 +416,12 @@ def test_filter_on_an_undeclared_key_is_rejected(store: HotdataVectorStore) -> N
 def test_filter_of_the_wrong_type_is_rejected(store: HotdataVectorStore) -> None:
     with pytest.raises(ValueError, match="filter on 'beds' expects int"):
         store.similarity_search("a", filter={"beds": "two"})
+
+
+def test_filtering_an_int_column_by_a_bool_is_rejected(store: HotdataVectorStore) -> None:
+    """Otherwise `beds=True` would silently become `beds = 1`."""
+    with pytest.raises(ValueError, match="filter on 'beds' expects int"):
+        store.similarity_search("a", filter={"beds": True})
 
 
 def test_filter_operators_are_rejected_explicitly(store: HotdataVectorStore) -> None:

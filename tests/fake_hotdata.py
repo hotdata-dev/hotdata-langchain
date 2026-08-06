@@ -15,7 +15,13 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from hotdata_framework import DEFAULT_SCHEMA, LoadManagedTableResult, ManagedDatabase, QueryResult
+from hotdata_framework import (
+    DEFAULT_SCHEMA,
+    LoadManagedTableResult,
+    ManagedDatabase,
+    ManagedTable,
+    QueryResult,
+)
 
 _SEARCH_RE = re.compile(
     r"^SELECT (?P<projection>.+?), (?P<fn>\w+)\(embedding, ARRAY\[(?P<vector>[^\]]*)\]\) "
@@ -85,6 +91,24 @@ class FakeHotdataClient:
         self.loads: list[str] = []
         self.schemas: list[pa.Schema] = []
         self.queries: list[str] = []
+
+    def list_managed_tables(
+        self,
+        database: ManagedDatabase,
+        *,
+        schema: str | None = None,
+    ) -> list[ManagedTable]:
+        return [
+            ManagedTable(
+                full_name=f"{database.id}.{entry['schema']}.{entry['table']}",
+                schema=entry["schema"],
+                table=entry["table"],
+                synced=False,
+                last_sync=None,
+            )
+            for entry in self.declared
+            if schema is None or entry["schema"] == schema
+        ]
 
     def add_managed_table(
         self,

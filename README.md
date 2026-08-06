@@ -151,9 +151,10 @@ index, then an agent that picks between search and SQL.
 `HotdataVectorStore` implements LangChain's `VectorStore`, so Hotdata works as the retrieval
 backend for any retriever, chain or eval built on that interface.
 
-It is a primitive, not a tool — it is not part of `make_hotdata_tools` and an agent never calls
-it directly. You compose it into a chain, or hand `as_retriever()` to something that expects a
-retriever:
+It is a primitive rather than a tool: it is not part of `make_hotdata_tools`, and a model cannot
+call it directly because it has no name, description or argument schema. You compose it into a
+chain, hand `as_retriever()` to anything expecting a retriever, or wrap it as a tool so an agent
+*can* call it — see [below](#letting-an-agent-search-the-store).
 
 ```python
 from langchain_openai import OpenAIEmbeddings
@@ -212,6 +213,31 @@ CLI, matching its metric to the `distance=` you configured.
 score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean
 relevance score expects true Euclidean distance, so `similarity_search_with_relevance_scores`
 under `l2` returns scores on the wrong scale. Ranking is correct under all three.
+
+### Letting an agent search the store
+
+The store is not a tool, but a retriever becomes one with LangChain's own
+`create_retriever_tool` — so an agent decides *whether* to search and *what* to search for,
+alongside the SQL tools:
+
+```python
+from langchain_core.tools.retriever import create_retriever_tool
+
+search_docs = create_retriever_tool(
+    store.as_retriever(search_kwargs={"k": 4}),
+    name="search_listings",
+    description="Find listings whose description matches what the guest is describing.",
+)
+
+tools = [*hl.make_hotdata_tools(client, database_id="dbid..."), search_docs]
+```
+
+Use a chain when every question needs the corpus — one retrieval, predictable cost. Wrap it as
+a tool when the model should choose, reformulate a query, or search more than once.
+
+Note the two return different things: `create_retriever_tool` gives the model concatenated
+document text, whereas `hotdata_search_text` returns the `{"metadata", "rows"}` envelope the
+other Hotdata tools use, so values from a hit can be carried into a follow-up SQL query.
 
 ### Filtering on metadata
 

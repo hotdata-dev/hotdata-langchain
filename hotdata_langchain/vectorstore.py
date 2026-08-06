@@ -57,6 +57,19 @@ _PYTHON_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 
 
+def _matches_type(value: Any, column_type: str) -> bool:
+    """Report whether ``value`` may be stored in a column declared ``column_type``.
+
+    ``bool`` is a subclass of ``int`` in Python, so a plain ``isinstance`` check would
+    accept ``True`` for an ``int`` column and store it as ``1`` while ``metadata_json``
+    kept ``true`` — the same key disagreeing with itself across the two
+    representations. Booleans are therefore only ever accepted by a ``bool`` column.
+    """
+    if isinstance(value, bool):
+        return column_type == "bool"
+    return isinstance(value, _PYTHON_TYPES[column_type])
+
+
 class HotdataVectorStore(VectorStore):
     """Vector store over one managed table in a Hotdata managed database.
 
@@ -152,12 +165,27 @@ class HotdataVectorStore(VectorStore):
         """Fully qualified table reference used in generated SQL."""
         return f'"default"."{self._schema}"."{self._table}"'
 
+    def _table_exists(self) -> bool:
+        return any(
+            managed.table == self._table
+            for managed in self._client.list_managed_tables(self._database, schema=self._schema)
+        )
+
     def _declare_table(self) -> None:
-        """Declare the table keyed on ``id``, tolerating one that already exists.
+        """Declare the table keyed on ``id`` unless it already exists.
 
         The key is what makes upsert and delete loads address existing rows; a keyless
-        table silently degrades to append-only.
+        table takes writes as appends instead. Existence is checked first rather than
+        declaring and swallowing whatever comes back, because the client reports a
+        permission failure, an outage and an already-declared table as the same
+        ``RuntimeError`` — swallowing them all would construct a store that looks
+        correctly keyed and duplicates rows on every write instead.
+
+        A declaration that loses a race with another process is the one tolerated
+        failure, and only once the table is confirmed to exist.
         """
+        if self._table_exists():
+            return
         try:
             self._client.add_managed_table(
                 self._database,
@@ -165,8 +193,10 @@ class HotdataVectorStore(VectorStore):
                 schema=self._schema,
                 key=[ID_COLUMN],
             )
-        except Exception as e:
-            logger.debug("table %s already declared or not declarable: %s", self.table_ref, e)
+        except RuntimeError:
+            if not self._table_exists():
+                raise
+            logger.debug("table %s was declared concurrently", self.table_ref)
 
     # ------------------------------------------------------------------ writes
 
@@ -193,12 +223,8 @@ class HotdataVectorStore(VectorStore):
         if not texts:
             return []
 
-        resolved_ids = [
-            row_id if row_id else uuid.uuid4().hex
-            for row_id in (ids if ids is not None else [None] * len(texts))
-        ]
-        for row_id in resolved_ids:
-            quote_literal(row_id)
+        supplied: list[str | None] = list(ids) if ids is not None else [None] * len(texts)
+        resolved_ids = [self._row_id(row_id) for row_id in supplied]
         row_metadatas = metadatas if metadatas is not None else [{} for _ in texts]
         vectors = self._embedding.embed_documents(texts)
 
@@ -217,15 +243,29 @@ class HotdataVectorStore(VectorStore):
         return resolved_ids
 
     @staticmethod
+    def _row_id(supplied: str | None) -> str:
+        """Return the id to store, generating one only when none was supplied.
+
+        ``add_documents`` passes ``None`` for a document without an id, which is the
+        only case that gets a generated one. An empty string is a caller mistake rather
+        than an absent id, so it raises instead of being quietly replaced.
+        """
+        if supplied is None:
+            return uuid.uuid4().hex
+        if not supplied:
+            raise ValueError("document ids must not be empty")
+        quote_literal(supplied)  # rejects ids that could not be looked up later
+        return supplied
+
+    @staticmethod
     def _promoted_array(
         name: str,
         column_type: MetadataColumnType,
         metadatas: Sequence[Mapping[str, Any]],
     ) -> pa.Array:
         values = [metadata.get(name) for metadata in metadatas]
-        expected = _PYTHON_TYPES[column_type]
         for value in values:
-            if value is not None and not isinstance(value, expected):
+            if value is not None and not _matches_type(value, column_type):
                 raise ValueError(
                     f"metadata key {name!r} is declared {column_type!r} but got "
                     f"{type(value).__name__} ({value!r})"
@@ -292,7 +332,7 @@ class HotdataVectorStore(VectorStore):
 
     @staticmethod
     def _literal(key: str, column_type: MetadataColumnType, value: Any) -> str:
-        if not isinstance(value, _PYTHON_TYPES[column_type]):
+        if not _matches_type(value, column_type):
             raise ValueError(
                 f"filter on {key!r} expects {column_type}, got {type(value).__name__} ({value!r})"
             )
