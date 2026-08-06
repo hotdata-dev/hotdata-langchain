@@ -7,6 +7,27 @@ cd "$ROOT"
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 
+# Reading pyproject.toml uses tomllib, which is Python 3.11+, while macOS still ships 3.9
+# as python3. Prefer the system interpreter, else fall back to uv's. Most call sites are
+# command substitutions, so RELEASE_PY only caches within one subshell; the probe is a
+# process spawn, not a resolution the caller has to thread through.
+py() {
+  if [[ -z "${RELEASE_PY:-}" ]]; then
+    if python3 -c 'import tomllib' >/dev/null 2>&1; then
+      RELEASE_PY=system
+    elif command -v uv >/dev/null 2>&1; then
+      RELEASE_PY=uv
+    else
+      die "python3 is too old for tomllib (need 3.11+); install uv or a newer python3"
+    fi
+  fi
+  if [[ "$RELEASE_PY" == system ]]; then
+    python3 "$@"
+  else
+    uv run --quiet --no-project python "$@"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -24,7 +45,7 @@ EOF
 }
 
 get_version() {
-  python3 - <<'PY'
+  py - <<'PY'
 import tomllib
 from pathlib import Path
 print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
@@ -32,7 +53,7 @@ PY
 }
 
 get_pkg_name() {
-  python3 - <<'PY'
+  py - <<'PY'
 import tomllib
 from pathlib import Path
 print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["name"])
@@ -41,7 +62,7 @@ PY
 
 set_version() {
   local ver="$1"
-  python3 - "$ver" <<'PY'
+  py - "$ver" <<'PY'
 import re, sys
 from pathlib import Path
 ver = sys.argv[1]
@@ -56,7 +77,7 @@ PY
 
 bump_version() {
   local kind="$1" current="$2"
-  python3 - "$kind" "$current" <<'PY'
+  py - "$kind" "$current" <<'PY'
 import re, sys
 kind, current = sys.argv[1], sys.argv[2]
 match = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", current)
@@ -104,14 +125,13 @@ update_changelog() {
   local ver="$1"
   local date
   date="$(date +%Y-%m-%d)"
-  python3 scripts/update_changelog.py "$ver" "$date"
+  py scripts/update_changelog.py "$ver" "$date"
 }
 
 cmd_prepare() {
   local bump="${1:-}"
   [[ -n "$bump" ]] || { usage; die "missing bump kind or explicit version"; }
   need gh
-  need python3
   need uv
   ensure_clean
 
@@ -159,7 +179,6 @@ After merge, run \`./scripts/release.sh publish\` from a clean \`${base}\` check
 
 cmd_publish() {
   need gh
-  need python3
   ensure_clean
 
   local base ver tag
@@ -174,7 +193,7 @@ cmd_publish() {
 
   git rev-parse "$tag" >/dev/null 2>&1 && die "tag $tag already exists"
   [[ -f CHANGELOG.md ]] || die "CHANGELOG.md is required"
-  python3 - "$ver" <<'PY'
+  py - "$ver" <<'PY'
 import re, sys
 from pathlib import Path
 ver = sys.argv[1]
