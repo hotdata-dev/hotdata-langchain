@@ -1,6 +1,6 @@
 # hotdata-langchain
 
-Give your [LangChain](https://python.langchain.com/) agents access to [Hotdata](https://hotdata.dev) — run SQL against your workspace connections, full-text search indexed columns, and work with managed databases.
+Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, full-text search indexed columns and work with managed databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
 
 ## Install
 
@@ -14,9 +14,10 @@ Set `HOTDATA_API_KEY` in your environment. Optionally set `HOTDATA_WORKSPACE` to
 
 ## Quickstart
 
-The package itself depends only on `langchain-core`, and works with any tool-calling model.
-Running an agent additionally needs the `langchain` package and the integration for whichever
-model provider you use.
+Of the LangChain packages, this one needs only `langchain-core`, and works with any
+tool-calling model. Running an agent additionally needs the `langchain` package and the
+integration for whichever model provider you use; using `HotdataVectorStore` needs an
+embedding provider's integration, such as `langchain-openai`.
 
 ```python
 from langchain.agents import create_agent
@@ -145,6 +146,123 @@ Provisioning the index itself is not yet part of this package; create it through
 API or CLI. `demo/` has a script that does the whole flow — managed database, data load, BM25
 index, then an agent that picks between search and SQL.
 
+## Vector store
+
+`HotdataVectorStore` implements LangChain's `VectorStore`, so Hotdata works as the retrieval
+backend for any retriever, chain or eval built on that interface.
+
+It is a primitive rather than a tool: it is not part of `make_hotdata_tools`, and a model cannot
+call it directly because it has no name, description or argument schema. You compose it into a
+chain, hand `as_retriever()` to anything expecting a retriever, or wrap it as a tool so an agent
+*can* call it — see [below](#letting-an-agent-search-the-store).
+
+```python
+from langchain_openai import OpenAIEmbeddings
+
+store = hl.HotdataVectorStore(
+    client,
+    OpenAIEmbeddings(model="text-embedding-3-small"),
+    database_id="dbid...",
+    table="documents",
+)
+
+store.add_texts(
+    ["Cozy studio with great light", "Two-bedroom near the park"],
+    [{"city": "sf"}, {"city": "nyc"}],
+)
+
+docs = store.similarity_search("somewhere bright to stay", k=3)
+retriever = store.as_retriever(search_kwargs={"k": 3})   # composes into any chain
+```
+
+Rows are stored in one managed table keyed on `id`, so re-adding a document with an existing
+id replaces it rather than duplicating it. `delete(ids=[...])` requires ids — there is no
+delete-everything call.
+
+The store declares that table itself. If you pre-create the database, leave the table out of
+`tables=[...]` and let the store declare it, or declare it with `key=["id"]` yourself — a
+managed table with no key takes writes as appends, so re-adding a document would duplicate it,
+and an existing table's key cannot be read back to warn you.
+
+Searches run as a single SQL query using the engine's scalar distance functions:
+
+```sql
+SELECT id, content, metadata_json,
+       cosine_distance(embedding, ARRAY[...]) AS dist
+FROM "default"."public"."documents"
+ORDER BY dist ASC
+LIMIT 4
+```
+
+That query is correct with **no index at all** — it brute-forces the table — so a store is
+usable the moment you create it. Today every search is a full scan.
+
+It is also written to match the shape the engine's optimizer rewrites into an HNSW index
+lookup: a plain column, a literal `ARRAY[...]`, `ASC`, a `LIMIT`, no vector column in the
+output, and an index built on the same metric. The intent is that the same query gets faster
+once such an index exists, with nothing in your code changing. **That rewrite has not yet been
+confirmed end to end for these queries** — the conditions come from reading the engine's
+optimizer rule, and verifying it needs an index this package cannot yet create. Tracked in
+[`docs/vectorstore-plan.md`](docs/vectorstore-plan.md); until then, treat the fast path as the
+design intent rather than a measured property.
+
+Provisioning an index is not part of this package yet; create one through the Hotdata API or
+CLI, matching its metric to the `distance=` you configured.
+
+`distance=` accepts `"cosine"` (default), `"l2"` and `"dot"`. Prefer `cosine`: its relevance
+score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean
+relevance score expects true Euclidean distance, so `similarity_search_with_relevance_scores`
+under `l2` returns scores on the wrong scale. Ranking is correct under all three.
+
+### Letting an agent search the store
+
+The store is not a tool, but a retriever becomes one with LangChain's own
+`create_retriever_tool` — so an agent decides *whether* to search and *what* to search for,
+alongside the SQL tools:
+
+```python
+from langchain_core.tools.retriever import create_retriever_tool
+
+search_docs = create_retriever_tool(
+    store.as_retriever(search_kwargs={"k": 4}),
+    name="search_listings",
+    description="Find listings whose description matches what the guest is describing.",
+)
+
+tools = [*hl.make_hotdata_tools(client, database_id="dbid..."), search_docs]
+```
+
+Use a chain when every question needs the corpus — one retrieval, predictable cost. Wrap it as
+a tool when the model should choose, reformulate a query, or search more than once.
+
+Note the two return different things: `create_retriever_tool` gives the model concatenated
+document text, whereas `hotdata_search_text` returns the `{"metadata", "rows"}` envelope the
+other Hotdata tools use, so values from a hit can be carried into a follow-up SQL query.
+
+### Filtering on metadata
+
+Metadata always round-trips in full. To *filter* on a key, declare it up front so it is stored
+as a real typed column:
+
+```python
+store = hl.HotdataVectorStore(
+    client,
+    embeddings,
+    database_id="dbid...",
+    metadata_columns={"city": "string", "beds": "int"},
+)
+
+store.similarity_search("bright and quiet", k=3, filter={"city": "sf"})
+```
+
+Equality only, for now. Filtering on an undeclared key raises `ValueError` rather than quietly
+returning unfiltered results. The predicate goes into the search query itself, not around it —
+filtering *after* a top-k selection can only shrink the result, never re-fill it back to `k`.
+
+`metadata_columns` has to match the table it points at. An upsert must carry every column the
+table has, so opening an existing store with different promoted columns fails on the first
+write with `upload is missing column '<name>'`.
+
 ## Scoping queries to a managed database
 
 `database_id=` scopes all SQL the agent runs to one managed database. The API requires a
@@ -183,10 +301,15 @@ tools = hl.make_hotdata_tools(client, max_rows=50)
 ```bash
 uv run python examples/langchain_basic.py
 uv run python examples/langchain_managed_db.py
+
+# needs an embedding provider key and the langchain-openai integration
+uv run --group demo python examples/langchain_vectorstore.py
 ```
 
-For a full end-to-end run against a real workspace — data load, BM25 index build, then an
-agent choosing between search and SQL — see [`demo/`](demo/README.md).
+For full end-to-end runs against a real workspace, see [`demo/`](demo/README.md): one takes a
+workspace from empty through a data load and BM25 index build to an agent choosing between
+search and SQL; the other writes embedded documents into a managed table and answers a
+question with a stock LangChain retrieval chain over `HotdataVectorStore`.
 
 ## Development
 

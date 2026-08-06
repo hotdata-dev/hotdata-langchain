@@ -1,15 +1,14 @@
 # `HotdataVectorStore` — implementation plan
 
-Status: plan / not yet built. Not committed — decide later whether this belongs in the repo
-long-term or stays a local reference doc (mirrors the convention used in
-`hotdata-dlt-destination/docs/vector-search-exploration.md`).
+Status: plan / not yet built. Kept in-repo while the AI-native-layer work is in flight; it can
+move out once the roadmap is delivered.
+
+This plan is **self-contained**. It depends on no unmerged branch and no parked work.
 
 ## Problem & positioning
 
-Hotdata is working with LangChain on deeper ecosystem integration. Phase 1 of that work — `HotdataToolCache`/`cached()`, a Hotdata-backed cache for
-arbitrary LangChain tool calls — shipped as draft PR #33. The team has validated two
-directions coming out of that: "Hotdata as a tool for LangChain" (the existing 4-tool
-foundation in `make_hotdata_tools`) and "Tool caching" (Phase 1 itself).
+Hotdata is working with LangChain on deeper ecosystem integration, on top of the existing tool
+foundation in `make_hotdata_tools` (SQL, managed databases, BM25 search, schema discovery).
 
 `VectorStore`/RAG is the next priority, chosen specifically because it converges with Rohan's
 own recent vector-search engineering:
@@ -36,10 +35,12 @@ integrations.
 has separately articulated a longer-term vision of Hotdata as an "AI-native query layer" for
 LangChain — a single tool that routes across SQL, full-text, vector, and point-lookup
 pathways with its own query planning and permissions, rather than several discrete tools the
-agent picks between. `HotdataVectorStore` (this doc) and `HotdataToolCache` are partial
-building blocks toward that vision (the SQL and caching pieces, plus this doc's vector
-pathway) — not the vision itself. That larger design is intentionally not scoped here; it's
-tracked separately until it moves from understanding to planning.
+agent picks between. `HotdataVectorStore` is one building block toward that vision — the vector
+pathway — not the vision itself. That larger design is intentionally not scoped here; see
+`docs/ai-native-layer-roadmap.md` and issue #39, which covers the agent-facing *tool* surface
+for semantic search and rank fusion. **#39 and this plan are different surfaces**: #39 wraps
+`vector_search()` as a tool the model calls; this is LangChain's `VectorStore` primitive for
+retrievers and chains. They share the engine contract, not the code.
 
 **This document covers `HotdataVectorStore` only** — a new class in `hotdata_langchain`. It
 does not cover the `hotdata-ibis` helper or the `hotdata-dlt-destination` adapter in
@@ -49,17 +50,14 @@ implementation detail; see "Cross-repo dependency tracking" below for how those 
 
 ### File and constructor
 
-New file: `hotdata_langchain/vectorstore.py` (sibling to `cache.py`, not folded into
-`databases.py`). Constructor mirrors `HotdataToolCache`'s `database`/`database_id`/`table`/`schema`
-pattern from `cache.py`:
+New file: `hotdata_langchain/vectorstore.py`, not folded into `databases.py`.
 
 ```python
 HotdataVectorStore(
     client: HotdataClient,
     embedding: Embeddings,
     *,
-    database: str = "langchain_vectorstore",
-    database_id: str | None = None,
+    database_id: str | ManagedDatabase,       # REQUIRED — id, never a name
     table: str = "vectors",
     schema: str = DEFAULT_SCHEMA,
     distance: Literal["cosine", "l2", "dot"] = "cosine",
@@ -67,13 +65,23 @@ HotdataVectorStore(
 )
 ```
 
+**`database_id` is required and id-addressed** (issue #38, shipped in 0.3.0). The store never
+creates a database implicitly and never resolves one by name — the caller creates it and passes
+the id, the same stance the plan already takes on `delete` (never expose an unbounded
+destructive operation). An already-resolved `ManagedDatabase` is accepted so a caller holding
+one pays no lookup.
+
+That single `resolve_database_by_id(client, database_id)` call at construction is the **only**
+lookup in the class. Every subsequent query and load addresses the resolved `ManagedDatabase`
+record, so id-addressing propagates throughout by construction.
+
 `embedding` is held on `self`, not passed per-call — the universal LangChain convention, and
 what lets `similarity_search(self, query, k=4, **kwargs)` match the ABC's fixed signature.
 
 ### Storage schema
 
-One managed table, key = `["id"]` (enables `mode="upsert"`/`"delete"` exactly like
-`HotdataToolCache`'s `cache_key` pattern):
+One managed table, key = `["id"]`, which is what enables `mode="upsert"` and `mode="delete"`
+on `load_managed_table`:
 
 | column | type | purpose |
 |---|---|---|
@@ -83,7 +91,7 @@ One managed table, key = `["id"]` (enables `mode="upsert"`/`"delete"` exactly li
 | `embedding` | `list<float32>` | confirmed to round-trip through `load_managed_table` via a live spike in a sibling repo |
 | *(promoted metadata columns)* | typed per `metadata_columns` | denormalized copy of declared metadata keys, so `WHERE` can target a real typed column — see Filtering below |
 
-### Methods (verified against installed `langchain_core==1.4.0` source, not docs)
+### Methods (verified against installed `langchain_core` source, not docs; re-confirmed on 1.5.1)
 
 Only `similarity_search` and `from_texts` are truly `@abstractmethod` on `VectorStore`.
 Everything else has a default or raises `NotImplementedError` until overridden.
@@ -91,9 +99,9 @@ Everything else has a default or raises `NotImplementedError` until overridden.
 - **`add_texts`** (implement; `add_documents` derives for free from it, confirmed via the base
   class's own delegation check). `self._embedding.embed_documents(texts)` → one pyarrow table
   (id/content/metadata_json/embedding/promoted columns) → temp parquet →
-  `client.load_managed_table(..., mode="upsert", key=["id"])`. Same shape as
-  `HotdataToolCache.set()`. Generate ids via `uuid.uuid4().hex` when omitted — never `None` (the
-  key column can't be null).
+  `client.load_managed_table(self._db, table, schema=..., file=..., mode="upsert", key=["id"])`,
+  passing the resolved record. Generate ids via `uuid.uuid4().hex` when omitted — never `None`
+  (the key column can't be null).
 - **`similarity_search` / `similarity_search_by_vector` / `similarity_search_with_score(_by_vector)`**
   — implement all explicitly rather than relying on ABC defaults. See "SQL-path decision" below
   for the query shape.
@@ -103,11 +111,9 @@ Everything else has a default or raises `NotImplementedError` until overridden.
 - **`get_by_ids(ids)`** — `WHERE id IN (...)`, no vector math involved; the simplest method,
   built first.
 - **`delete(ids=None, **kwargs)`** — **requires** `ids` (raises if omitted; no "delete
-  everything" in v1, mirroring `HotdataToolCache`'s stance of never exposing an unbounded
-  destructive operation). Backed by `load_managed_table(..., mode="delete", key=["id"])`.
-  Raises on backend failure — deletes do **not** fail open (unlike the cache's fail-open
-  policy: silently reporting a delete succeeded when it didn't is actively dangerous, a cache
-  miss is not).
+  everything" in v1 — never expose an unbounded destructive operation). Backed by `load_managed_table(..., mode="delete", key=["id"])`.
+  Raises on backend failure — deletes do **not** fail open: silently reporting a delete
+  succeeded when it didn't is actively dangerous.
 - **`from_texts(cls, texts, embedding, metadatas=None, *, ids=None, **kwargs)`** — classmethod;
   `client` threaded through `**kwargs` (the ABC's sanctioned per-implementation extension
   point, same pattern every real integration uses for constructor args the ABC can't
@@ -128,9 +134,19 @@ Everything else has a default or raises `NotImplementedError` until overridden.
   `similarity_search_with_relevance_scores`) is free from the base class — verified by tests
   that they delegate correctly, no new code required.
 
-**Internal plumbing**: reuse `HotdataToolCache`'s `_ensure_ready()`/`_resolve_and_declare()`
-pattern verbatim — resolve-or-create the managed database, best-effort `add_managed_table` with
-`key=["id"]`, swallow "already declared" failures at `logger.debug`.
+**Internal plumbing** (self-contained, no shared base class needed):
+
+1. **Construction** — `self._db = resolve_database_by_id(client, database_id)`. Raises `KeyError`
+   for an unknown id, so a bad id fails at construction rather than on first search.
+2. **Table declaration** — best-effort `client.add_managed_table(self._db, table, schema=schema,
+   key=["id"])`, swallowing an "already declared" failure at `logger.debug`. The key is what
+   makes `mode="upsert"`/`"delete"` work; a keyless table silently degrades to append-only, so
+   this cannot be skipped.
+3. **Every read** — `client.execute_sql(sql, database=self._db)`, passing the resolved record.
+   Never a string: `execute_sql(database="<id>")` re-resolves per call, and a name would reach
+   the framework's by-name fallback (see `docs/engine-contract.md`).
+4. **Table reference in SQL** — `"default"."<schema>"."<table>"`; inside a managed database the
+   built-in catalog is always `default`.
 
 ### SQL-path decision
 
@@ -175,9 +191,9 @@ explicitly **unverified** (attribute-filtered ANN is a harder capability many en
 support natively) — brute-force-but-correct is an accepted v1 cost, not a blocker, consistent
 with the engine's own "brute force is always correct, just not accelerated" design.
 
-Ids and filter literals are charset-validated before SQL interpolation (mirroring `cache.py`'s
-`_KEY_PATTERN` philosophy — reject anything outside a conservative charset rather than
-attempt general SQL escaping). The query vector itself is never user-controlled text; it's a
+Ids and filter literals are charset-validated before SQL interpolation, reusing
+`hotdata_langchain/_sql.py`'s `validate_identifier`/`quote_literal` — reject anything outside a
+conservative charset rather than attempt general SQL escaping. The query vector itself is never user-controlled text; it's a
 list of floats we format ourselves.
 
 ### Dimension binding
@@ -200,12 +216,18 @@ docstring rather than silently "fixed."
 
 ## Testing strategy
 
-No live embedding-provider credentials are available in this repo's `.env` (Hotdata
-credentials only). Unit tests mirror `tests/test_cache.py`'s fixture style exactly: a fake
-`HotdataClient` (`MagicMock`) backed by an in-memory dict, where `load_managed_table` does a
-*real* `pq.read_table(file).to_pylist()` (exercising the `list<float32>` round-trip `cache.py`
-never needed) and `execute_sql` does real SQL-shape parsing rather than a bare mocked return
-value. For embeddings, use `langchain_core.embeddings.DeterministicFakeEmbedding` (confirmed
+**Step 0 — confirm the embedding key's scope before writing any code. Done, 2026-08-06.**
+`.env` carries `OPENAI_EMBEDDING_KEY` (a team key) alongside `OPENAI_API_KEY`. A single
+`embeddings.create` call confirmed it is embeddings-scoped and live: `text-embedding-3-small`
+returns **1536 dimensions**, no 403. Live verification of the write/read round-trip is
+therefore unblocked, and `1536` is the dimension the first real index will be created with.
+
+Unit tests need no provider credentials. A fake `HotdataClient` (`MagicMock`) backed by an
+in-memory dict, where `load_managed_table` does a *real* `pq.read_table(file).to_pylist()` (so
+the `list<float32>` round-trip is genuinely exercised, not mocked away) and `execute_sql` does
+real SQL-shape parsing rather than returning a bare canned value. `tests/conftest.py` already
+provides `managed_db` and `databases_api` fixtures from the #38 work — reuse them so the
+constructor's id resolution is stubbed the same way everywhere. For embeddings, use `langchain_core.embeddings.DeterministicFakeEmbedding` (confirmed
 present in the installed `langchain_core`, zero new dependency) rather than a bespoke fake.
 
 Coverage: schema/type correctness on write; exact SQL shape on read (distance aliased,
@@ -214,14 +236,26 @@ on an undeclared filter key or a malformed id; `delete` requiring `ids`; `from_t
 round-tripping end to end; MMR selecting the embedding column and calling into
 `maximal_marginal_relevance` with the right shapes.
 
-**Live verification** (once real credentials or a local cluster are available — not part of
-this repo's CI): round-trip `add_texts`/`similarity_search` against a real workspace with a
-real embedding; `EXPLAIN` the primary query before and after provisioning a matching-metric
-index, confirming the plan shows the USearch-rewritten node. Since `runtimedb` PR #953 is now
-merged and live in production, this is no longer blocked on a pending deploy — it's now
-directly verifiable once `HotdataVectorStore` itself exists, rather than a claim asserted from
-a sibling repo's spike. `EXPLAIN` a `WHERE`-filtered query to settle whether filtered queries
-still hit the fast path.
+**Live verification.** Done for Phase 1 on 2026-08-06 against the production workspace, via
+`demo/vectorstore_demo.py` (database `dbidh4tn5esw2roy7zg4sh1fqv8rov`). Confirmed working:
+the `list<float32>` embedding column round-trips through `load_managed_table`; a
+1536-dimension `ARRAY[...]` literal in `cosine_distance(embedding, ARRAY[...])` is accepted
+and ranks sensibly; the `WHERE` predicate filters inside the ranking query; `mode="upsert"`
+with `key=["id"]` leaves 8 rows after two runs of 8 documents; `mode="delete"` accepts a
+parquet carrying **only** the key column and removes the row; deleting an absent id is a
+no-op; `get_by_ids` skips ids that are not present; and `as_retriever()` composes into an
+LCEL retrieval chain that answers from retrieved context.
+
+One constraint surfaced that the design had not anticipated: **an upsert must carry every
+column the table has** (`upload is missing column '<name>'`). So `metadata_columns` has to
+match the table a store is opened against — pointing a differently-configured store at an
+existing table fails on the first write rather than silently writing partial rows. Documented
+in the class docstring and README.
+
+Still outstanding: `EXPLAIN` the primary query before and after provisioning a
+matching-metric index to confirm the plan shows the USearch-rewritten node, and `EXPLAIN` a
+`WHERE`-filtered query to settle whether filtered queries still reach the fast path. Both need
+an index, so they belong with Phase 3.
 
 ## Phasing
 
@@ -237,8 +271,28 @@ still hit the fast path.
 4. Docs/examples are pulled into Phase 1 rather than deferred to the end — this is the piece
    the LangChain conversation will exercise first.
 
+### Tracking
+
+Each phase is its own issue and its own PR, under one tracking issue. As of writing **none of
+these exist yet** — the only related issues are #39 (the agent-facing tool surface, a different
+surface) and #36 item 2 (`create_index`, which gates Phase 3 alone).
+
+| Issue to file | Scope | Blocked by |
+|---|---|---|
+| Epic: `HotdataVectorStore` | tracking; links this plan and the phases below | — |
+| Phase 1 — MVP | `add_texts`, the four `similarity_search*`, `get_by_ids`, `delete`, `from_texts`, promoted-column filtering, unit tests, `examples/langchain_vectorstore.py`, README, CHANGELOG | nothing |
+| Phase 2 — MMR | own PR; raw-vector read path | Phase 1 |
+| Phase 3 — self-provisioning | `from_texts(..., create_index=True)` | #36 item 2 |
+
+Phase 1 is a complete, mergeable `VectorStore` on its own: `as_retriever()`, chains and evals
+all work once it lands, with no index provisioned and no further phases.
+
 ## Cross-repo dependency tracking
 
+- **`hotdata_langchain` itself — id-only database addressing, shipped.** Issue #38 landed in
+  0.3.0: `resolve_database_by_id` fetches by `GET /databases/{id}` with no by-name fallback, and
+  `query_scope` rejects an unresolved string scope. This plan's constructor is built on it; see
+  "File and constructor" above. Nothing further needed.
 - **`sdk-python` (`hotdata_framework.HotdataClient`) — in scope, ours to build.** A
   `create_vector_index` addition. Confirmed via full grep: zero existing index-related code in
   the package today. The raw generated `hotdata.api.indexes_api.IndexesApi.create_index` +

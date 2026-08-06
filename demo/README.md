@@ -1,10 +1,19 @@
-# BM25 search demo
+# Demos
+
+Two runnable end-to-end demos against a real Hotdata workspace.
+
+| Demo | Shows | Script |
+|---|---|---|
+| [BM25 search](#1-bm25-search) | an agent choosing between full-text search and SQL | `bm25_search_demo.py` |
+| [Vector store](#2-vector-store) | `HotdataVectorStore` behind a stock LangChain retrieval chain | `vectorstore_demo.py` |
+
+## 1. BM25 search
 
 Takes a Hotdata workspace from empty to a LangChain agent that full-text searches real
 data, in one script. Uses the public San Francisco Airbnb listings fixture (7,535 rows)
 and builds a BM25 index over the free-text `description` column.
 
-## Run it
+### Run it
 
 Steps 1–5 need only a Hotdata key and exercise the tool directly, no model involved:
 
@@ -43,7 +52,7 @@ LANGSMITH_TRACING=true LANGSMITH_PROJECT=hotdata-langchain-bm25 \
     uv run --group demo --env-file .env python demo/bm25_search_demo.py
 ```
 
-## Credentials
+### Credentials
 
 | Variable | Needed for | Notes |
 |---|---|---|
@@ -63,7 +72,7 @@ tool shows up as a `tool` run named `hotdata_search_text` carrying its query and
 ranked JSON it returned, so the generated SQL and the agent's choice between search
 and SQL are both inspectable after the fact.
 
-## What each step does
+### What each step does
 
 1. **Managed database** — binds the database given by `--database-id`, or else creates one
    labelled `langchain_bm25_demo` with `public.listings` declared up front, so the load
@@ -104,7 +113,7 @@ and SQL are both inspectable after the fact.
    five — so this is the model's ceiling on a compound question, not something these tools
    introduced or can fix. Read the printed tool calls, not the table.
 
-## What makes the agent run work
+### What makes the agent run work
 
 **The tool descriptions, not the system prompt.** The demo's system prompt says only who
 the agent is — it deliberately says nothing about which tool to use or how the engine
@@ -125,7 +134,7 @@ out of the exception chain: the framework raises `RuntimeError("Bad Request")` w
 useful text sits in the underlying API response body. Descriptions lower the failure
 rate; readable errors are what let the model recover from what slips through.
 
-## Why the generated SQL looks the way it does
+### Why the generated SQL looks the way it does
 
 Step 5 prints the query. Two details in it are load-bearing:
 
@@ -135,3 +144,74 @@ Step 5 prints the query. Two details in it are load-bearing:
   trailing `LIMIT`. The fourth argument is what actually bounds the search, because
   `ORDER BY` blocks limit pushdown; relying on the trailing `LIMIT` alone would let the
   scan fall back to the engine's much larger default bound.
+
+## 2. Vector store
+
+Takes a Hotdata workspace from empty to a LangChain retrieval chain answering a question
+from documents it retrieved out of Hotdata. The chain itself is stock LangChain —
+`as_retriever()` into a prompt into a model — with no Hotdata-specific code in it, which is
+the whole point of implementing the `VectorStore` interface.
+
+The corpus is eight short listing descriptions written into the script, so the demo needs no
+fixture download and costs a handful of embedding tokens to run.
+
+### Run it
+
+Steps 1–5 need a Hotdata key and an embedding key, and involve no chat model:
+
+```bash
+uv run --group demo --env-file .env python demo/vectorstore_demo.py
+```
+
+The chain step (6) runs when you name a chat model:
+
+```bash
+uv run --group demo --env-file .env python demo/vectorstore_demo.py \
+    --model '<provider>:<model>'
+```
+
+Safe to re-run: documents carry explicit ids and the table is keyed on `id`, so a second run
+upserts the same eight rows rather than duplicating them.
+
+```bash
+# bind an existing managed database by id
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --database-id dbid...
+
+# retrieve more documents
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --k 5
+
+# stop before the chain step even with a model set
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --skip-chain
+
+# tear down the managed database it created
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
+```
+
+### Credentials
+
+| Variable | Needed for | Notes |
+|---|---|---|
+| `HOTDATA_API_KEY` | steps 1–6 | |
+| `OPENAI_EMBEDDING_KEY` | steps 3–6 | falls back to `OPENAI_API_KEY`; must be embeddings-scoped |
+| your model provider's key | step 6 | skipped without it, or without `--model` |
+| `DEMO_DATABASE_ID` | optional | pins the managed database by id |
+
+### What each step does
+
+1. **Managed database** — binds `--database-id`, or creates one labelled
+   `langchain_vectorstore_demo`. It deliberately declares **no** tables: the store declares
+   its own table keyed on `id`, and a table declared without that key would take writes as
+   appends, so a re-run would duplicate every document instead of replacing it.
+2. **Vector store** — constructs `HotdataVectorStore` over `public.documents`, promoting
+   `neighbourhood`/`beds`/`outdoor` to real typed columns so they can be filtered on. The
+   resolved database record from step 1 is passed straight in, so no id is looked up twice.
+3. **Embed and write** — embeds the eight documents and upserts them in one parquet load.
+4. **Similarity search** — prints hits with their raw cosine distances. This runs with **no
+   vector index**: the scalar `cosine_distance` UDF brute-forces the table, which is correct
+   from row one. The same query is rewritten into an HNSW index lookup once a matching-metric
+   index exists, with nothing in the code changing.
+5. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
+   the ranking query's `WHERE`, not around its result, so the filter still returns the top `k`
+   *matching* rows rather than whatever survives filtering an already-chosen top `k`.
+6. **Retrieval chain** — `store.as_retriever()` composed into a prompt and a model with LCEL.
+   Nothing in this step knows it is talking to Hotdata.

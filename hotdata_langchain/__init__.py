@@ -35,13 +35,19 @@ from hotdata_langchain.tools import (
     make_hotdata_tools,
     result_rows_for_llm,
 )
+from hotdata_langchain.vectorstore import (
+    DISTANCE_FUNCTIONS,
+    HotdataVectorStore,
+)
 
 __all__ = [
     "DEFAULT_DESCRIBE_TOOL_NAME",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_TOOL_NAME",
+    "DISTANCE_FUNCTIONS",
     "SCORE_COLUMN",
     "HotdataClient",
+    "HotdataVectorStore",
     "ManagedDatabase",
     "QueryResult",
     "__version__",
