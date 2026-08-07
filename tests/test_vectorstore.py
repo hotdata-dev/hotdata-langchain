@@ -672,3 +672,17 @@ def test_index_lookup_translates_api_errors(
 
     with pytest.raises(RuntimeError):
         store.create_index()
+
+
+def test_create_index_leaves_an_in_flight_build_alone(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """Start-up must not fight a build another process already started."""
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(status="pending")]
+    )
+
+    assert store.create_index() is None
+    assert fake_client.indexes == []

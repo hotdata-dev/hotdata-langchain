@@ -519,13 +519,16 @@ class HotdataVectorStore(VectorStore):
     ) -> CreateIndexResult | None:
         """Build the vector index that turns this store's searches into index lookups.
 
-        Returns ``None`` when an index on the embedding column already matches this
-        store's ``distance``, so calling this on every start-up is safe. A process that
-        loses a build race to another gets ``None`` too, but only once that other build
-        reports ready: a rejected build whose index is merely *listed* cannot be told
-        apart from one that registered and then failed, and reporting success for the
-        second would leave searches full-scanning with nothing said. Racing a build still
-        in progress therefore raises rather than resolving quietly.
+        Returns ``None`` when a vector index on the embedding column already matches this
+        store's ``distance``, whether it is built or still building, so calling this on
+        every start-up is safe and does not fight a build another process started.
+
+        The two states are told apart only after a build of our own has been rejected.
+        There, a merely *listed* index is not enough: it cannot be distinguished from one
+        our own failed build registered on its way out, and returning ``None`` for that
+        would report a success that leaves every search full-scanning. So that path
+        requires the index to report ready, and a genuine race against an in-flight build
+        raises rather than resolving quietly.
 
         Any vector index on the embedding column counts, whatever it is named, since
         what matters is whether searches are served. So an ``index_name`` is only used

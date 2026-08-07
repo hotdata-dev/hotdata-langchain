@@ -123,6 +123,15 @@ builds that later fail; `create_index` polls the job to a terminal state and rai
 
 Index *existence* is still not on the client. `IndexesApi(client.api).list_indexes(
 connection_id, schema, table)` is how `HotdataVectorStore.create_index` checks before building.
+Each listed entry carries `index_name`, `index_type`, `columns`, `metric`, `source_column` and
+`status` (verified 2026-08-07 against two live indexes, one `vector` and one `bm25`). Two
+details matter to a caller reading them:
+
+- **`status` comes back as an `IndexStatus` enum, `metric` as a plain string.** Observed
+  `status=<IndexStatus.READY: 'ready'>` alongside `metric='cosine'`. `IndexStatus` has exactly
+  two members, `ready` and `pending`, so a listed index is not necessarily a built one.
+- **`metric` is echoed in the same lowercase form it was requested in**, for `cosine`. The
+  `l2` and `dot` renderings have not been observed.
 
 **`dimensions` does not apply to a plain vector index.** When the indexed column already holds
 vectors, the engine reads the width off the stored data; `dimensions` only picks an output
