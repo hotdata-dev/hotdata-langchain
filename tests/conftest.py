@@ -39,6 +39,25 @@ def databases_api(managed_db: ManagedDatabase) -> Iterator[MagicMock]:
         yield api
 
 
+def vector_index(name: str = "vectors_embedding_vector", metric: str = "cosine") -> SimpleNamespace:
+    """An entry as ``IndexesApi.list_indexes`` reports one."""
+    return SimpleNamespace(
+        index_name=name, index_type="vector", columns=["embedding"], metric=metric
+    )
+
+
+@pytest.fixture
+def indexes_api() -> Iterator[MagicMock]:
+    """Patch the raw indexes API, reporting no index until a test says otherwise.
+
+    Index existence is not readable in SQL, so the store asks the control plane before
+    building one. Tests set ``list_indexes.return_value`` to change what it finds.
+    """
+    with patch("hotdata_langchain.vectorstore.IndexesApi") as api:
+        api.return_value.list_indexes.return_value = SimpleNamespace(indexes=[])
+        yield api
+
+
 @pytest.fixture
 def sample_result() -> QueryResult:
     return QueryResult(

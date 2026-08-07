@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HotdataVectorStore.create_index()` builds the vector index that turns the store's searches
+  into index lookups, with `from_texts(..., create_index=True)` to do it right after the first
+  write. Searches were always correct without an index, just brute-forced; provisioning one
+  previously meant leaving Python for the CLI.
+
+  The index is always built for the store's own `distance`, because a query whose distance
+  function is not the index's metric silently full-scans instead of erroring, and the server
+  would otherwise default to `l2` while this store defaults to `cosine`. An index that already
+  exists under a different metric raises, naming both. A matching one is a no-op, so calling
+  this on every start-up is safe, including from several processes at once.
+
+### Changed
+
+- Require `hotdata-framework>=0.10.0` for `create_index`. Additive: nothing this package
+  already used changed.
+- The SQL tool now asks the model for a full `catalog.schema.table` reference. The two-part
+  form resolves and returns correct rows, but the engine's index-lookup rewrite matches on the
+  reference as written, so it can forfeit an index with nothing reported
+  ([datafusion-vector-search-ext#32](https://github.com/hotdata-dev/datafusion-vector-search-ext/issues/32)).
+  `HotdataVectorStore` and the search tool emit the three-part form by construction and were
+  never exposed; this closes the one surface where a model writes the reference.
+- The vector fast path is documented as verified rather than intended: `EXPLAIN` against a live
+  engine shows the index lookup, and a `WHERE`-filtered query reaches it too with the predicate
+  pushed in. Observed plans and the shapes that forfeit it are in `docs/engine-contract.md`.
+  No code change — 0.4.0 already emitted the correct query shape.
+
+### Known issues
+
+- Building an index over an existing embedding column fails on some tables with `could not
+  detect dimension`, reproducibly, while structurally identical tables succeed
+  ([#52](https://github.com/hotdata-dev/hotdata-langchain/issues/52)). The width is read from
+  stored data rather than supplied, so there is no client-side workaround. Searches remain
+  correct on an affected table; they stay full scans.
 
 ## [0.4.0] - 2026-08-06
 

@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from hotdata_framework import (
     DEFAULT_SCHEMA,
+    CreateIndexResult,
     LoadManagedTableResult,
     ManagedDatabase,
     ManagedTable,
@@ -91,6 +92,33 @@ class FakeHotdataClient:
         self.loads: list[str] = []
         self.schemas: list[pa.Schema] = []
         self.queries: list[str] = []
+        self.indexes: list[dict[str, Any]] = []
+
+    def create_index(
+        self,
+        database: ManagedDatabase,
+        table: str,
+        **kwargs: Any,
+    ) -> CreateIndexResult:
+        """Record the request, and remember the row count the table held at build time.
+
+        The engine reads a plain vector index's width off stored data, so an index built
+        before the first write has nothing to measure. Recording the count is what lets a
+        test assert the write happened first.
+        """
+        self.indexes.append({"table": table, "rows_at_build": len(self.rows), **kwargs})
+        return CreateIndexResult(
+            full_name=f"{database.id}.{kwargs.get('schema', DEFAULT_SCHEMA)}.{table}",
+            schema_name=kwargs.get("schema", DEFAULT_SCHEMA),
+            table_name=table,
+            index_name=kwargs.get("index_name") or f"{table}_embedding_vector",
+            index_type="vector",
+            columns=list(kwargs.get("columns") or []),
+            metric=kwargs.get("metric"),
+            source_column=None,
+            status="ready",
+            job_id="job_fake",
+        )
 
     def list_managed_tables(
         self,

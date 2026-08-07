@@ -12,7 +12,8 @@ from typing import Any, Literal, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, ManagedDatabase
+from hotdata import IndexesApi
+from hotdata_framework import DEFAULT_SCHEMA, CreateIndexResult, HotdataClient, ManagedDatabase
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
@@ -57,6 +58,16 @@ _PYTHON_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 
 
+#: Index builds are polled to completion; an HNSW build over a large table outlasts the
+#: framework's own 300s default.
+DEFAULT_INDEX_TIMEOUT_S = 900.0
+
+
+def _wire_value(value: Any) -> str:
+    """Render an API field that may be a ``str``-mixin enum as its wire string."""
+    return str(getattr(value, "value", value))
+
+
 def _matches_type(value: Any, column_type: str) -> bool:
     """Report whether ``value`` may be stored in a column declared ``column_type``.
 
@@ -83,14 +94,19 @@ class HotdataVectorStore(VectorStore):
         ORDER BY dist ASC
         LIMIT k
 
-    That shape is correct with no index at all: it brute-forces the table, which is what
-    every search does today. It is also written to match the shape the engine's
-    optimizer rewrites into an HNSW index lookup, so the same query should get faster
-    once a matching-metric index exists on the embedding column, with nothing here
-    changing. That rewrite is not yet confirmed for these queries: its conditions come
-    from reading the engine's optimizer rule, and observing it needs an index this
-    package cannot create. The raw ``embedding`` column is never projected, because a
-    vector column in the output declines the rewrite.
+    That shape is correct with no index at all: it brute-forces the table. Once a vector
+    index built on the same metric exists on the embedding column, the engine rewrites
+    the identical query into an index lookup, with nothing here changing — confirmed
+    against a live engine, which reports a ``USearchExec`` node in the query plan. A
+    ``WHERE`` filter is pushed into that lookup rather than costing the fast path.
+
+    Three things forfeit the rewrite, all of which this class avoids: projecting the raw
+    ``embedding`` column, querying with a distance function the index was not built for,
+    and omitting ``LIMIT``.
+
+    ``create_index`` builds that index for this store's ``distance``, and
+    ``from_texts(..., create_index=True)`` does it straight after the first write. Neither
+    is required: searches are correct without an index, just brute-forced.
 
     ``database_id`` addresses the database by id and is resolved once here; every read
     and write afterwards addresses the resolved record. The store never creates a
@@ -441,6 +457,88 @@ class HotdataVectorStore(VectorStore):
         )
         return [self._document(row) for row in rows]
 
+    # ------------------------------------------------------------------ index
+
+    def _existing_vector_index(self) -> Any | None:
+        listed = (
+            IndexesApi(self._client.api)
+            .list_indexes(self._database.default_connection_id, self._schema, self._table)
+            .indexes
+        )
+        for index in listed or []:
+            if _wire_value(index.index_type) == "vector" and EMBEDDING_COLUMN in (
+                index.columns or []
+            ):
+                return index
+        return None
+
+    def create_index(
+        self,
+        *,
+        index_name: str | None = None,
+        wait: bool = True,
+        timeout_s: float = DEFAULT_INDEX_TIMEOUT_S,
+        poll_interval_s: float = 2.0,
+    ) -> CreateIndexResult | None:
+        """Build the vector index that turns this store's searches into index lookups.
+
+        Returns ``None`` when an index on the embedding column already matches this
+        store's ``distance``, so calling this on every start-up is safe — including from
+        several processes at once, where the one that loses the race finds the index
+        another built and returns ``None`` rather than failing. A build that fails for
+        any other reason still raises.
+
+        Any vector index on the embedding column counts, whatever it is named, since
+        what matters is whether searches are served. So an ``index_name`` is only used
+        for an index this call actually builds.
+
+        The index is built for ``distance``'s metric. That match is what makes the engine
+        rewrite the search query into an index lookup: a metric the query's distance
+        function was not built for is not an error, it just drops back to a full scan
+        with nothing reported. So an index that already exists under a *different* metric
+        raises rather than being left in place or quietly joined by a second one — either
+        the index or this store's ``distance`` is wrong, and only the caller knows which.
+
+        Call this after the first write. The engine reads the vector width off the stored
+        data, so an index built over an empty table has nothing to measure.
+
+        ``timeout_s`` bounds the wait for the build. Pass ``wait=False`` to return as soon
+        as the build is accepted, leaving its outcome to the caller.
+        """
+        existing = self._existing_vector_index()
+        if existing is not None:
+            metric = _wire_value(existing.metric) if existing.metric is not None else None
+            if metric != self._distance:
+                raise ValueError(
+                    f"{self.table_ref} already has vector index {existing.index_name!r} "
+                    f"with metric {metric!r}, but this store searches with "
+                    f"{self._distance!r}. A query whose distance function does not match "
+                    f"the index silently falls back to a full scan. Drop that index, or "
+                    f"construct the store with distance={metric!r}."
+                )
+            logger.debug("vector index %s already exists", existing.index_name)
+            return None
+
+        try:
+            return self._client.create_index(
+                self._database,
+                self._table,
+                schema=self._schema,
+                index_name=index_name,
+                columns=[EMBEDDING_COLUMN],
+                index_type="vector",
+                metric=self._distance,
+                wait=wait,
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+            )
+        except RuntimeError:
+            built = self._existing_vector_index()
+            if built is None or _wire_value(built.metric) != self._distance:
+                raise
+            logger.debug("vector index %s was built concurrently", built.index_name)
+            return None
+
     def _select_relevance_score_fn(self) -> Callable[[float], float]:
         if self._distance == "cosine":
             return self._cosine_relevance_score_fn
@@ -458,16 +556,26 @@ class HotdataVectorStore(VectorStore):
         metadatas: list[dict[str, Any]] | None = None,
         *,
         ids: list[str] | None = None,
+        create_index: bool = False,
         **kwargs: Any,
     ) -> HotdataVectorStore:
         """Build a store and write ``texts`` into it.
 
         ``client`` and ``database_id`` are passed through ``kwargs`` alongside any other
         constructor argument, the extension point the base signature leaves open.
+
+        ``create_index=True`` builds the vector index once the texts are written, which
+        is the order the engine requires: it reads the vector width off stored data.
+        Searches are correct either way, brute-forcing the table without an index; the
+        index is what makes them fast. It is off by default because building one is a
+        minutes-long job on a large table, which is not what a constructor should do
+        unasked.
         """
         client = kwargs.pop("client", None)
         if client is None:
             raise ValueError("from_texts requires client=<HotdataClient>")
         store = cls(client, embedding, **kwargs)
         store.add_texts(texts, metadatas, ids=ids)
+        if create_index:
+            store.create_index()
         return store
