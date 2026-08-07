@@ -8,14 +8,15 @@ no Hotdata-specific code in the chain itself. That is the point: implementing La
     uv run --group demo --env-file .env python demo/vectorstore_demo.py
 
 Embedding needs OPENAI_EMBEDDING_KEY (or OPENAI_API_KEY). The final chain step also needs a
-tool-calling model — pass one with --model or DEMO_MODEL — and is skipped without one; every
-step before it runs on the embedding key alone. Set LANGSMITH_API_KEY and
-LANGSMITH_TRACING=true to trace the run to LangSmith.
+chat model — pass one with --model or DEMO_MODEL — and is skipped without one; every step
+before it runs on the embedding key alone. The chain calls no tools, so any chat model works.
+Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to trace the run to LangSmith.
 """
 
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 from typing import Any
 
@@ -110,8 +111,11 @@ CORPUS = [
 QUESTION = "I want somewhere quiet with outdoor space. Where should I stay, and why?"
 
 
+_step_number = itertools.count(1)
+
+
 def step(message: str) -> None:
-    print(f"\n=== {message} ===")
+    print(f"\n=== {next(_step_number)}. {message} ===")
 
 
 def find_database_by_label(client: hl.HotdataClient, label: str) -> Any | None:
@@ -162,6 +166,27 @@ def print_hits(scored: list[tuple[Document, float]]) -> None:
         print(f"     {document.page_content[:100]}…")
 
 
+def search_plan(client: hl.HotdataClient, store: hl.HotdataVectorStore, *, k: int) -> str:
+    """Return the physical plan for the search this store emits.
+
+    Reads the store's own query builder rather than restating the SQL, so the plan shown
+    is the plan for the query the library actually sends.
+    """
+    sql = store._search_sql(store.embeddings.embed_query(QUESTION), k, None)
+    result = client.execute_sql(f"EXPLAIN {sql}", database=store.database)
+    physical = [
+        str(row[-1]) for row in result.rows if row and str(row[0]).startswith("physical_plan")
+    ]
+    return physical[0] if physical else "\n".join(str(row[-1]) for row in result.rows)
+
+
+def report_plan(plan: str, *, label: str) -> None:
+    accelerated = "USearchExec" in plan
+    print(f"  {label}: {'index lookup' if accelerated else 'full scan'}")
+    for line in plan.splitlines()[:3]:
+        print(f"    {line.rstrip()}")
+
+
 def run_chain(store: hl.HotdataVectorStore, *, model: str, k: int) -> None:
     """Answer QUESTION with a stock LangChain retrieval chain over this store."""
     from langchain.chat_models import init_chat_model
@@ -197,6 +222,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--k", type=int, default=3, help="how many documents to retrieve")
     parser.add_argument(
+        "--table",
+        default=TABLE,
+        help=f"managed table to write into (default: {TABLE}); a fresh name gets a fresh table",
+    )
+    parser.add_argument(
         "--model",
         default=os.environ.get("DEMO_MODEL"),
         help="chat model for the final chain, e.g. '<provider>:<model>' (or set DEMO_MODEL); "
@@ -207,6 +237,12 @@ def main() -> None:
         default=os.environ.get("DEMO_DATABASE_ID"),
         help="bind an existing managed database by id (or set DEMO_DATABASE_ID); "
         "without one the demo reuses or creates its own and prints the id to pin",
+    )
+    parser.add_argument(
+        "--create-index",
+        action="store_true",
+        help="build the vector index and show the query plan before and after; "
+        "searches are correct either way, this is what makes them index lookups",
     )
     parser.add_argument("--skip-chain", action="store_true", help="stop after direct searches")
     parser.add_argument(
@@ -232,31 +268,41 @@ def main() -> None:
         return
 
     try:
-        step("1. Managed database")
+        step("Managed database")
         db = ensure_database(client, args.database_id)
 
-        step("2. Vector store")
+        step("Vector store")
         store = hl.HotdataVectorStore(
             client,
             build_embeddings(),
             # The resolved record, so the store does not re-look-up what step 1 has.
             database_id=db,
-            table=TABLE,
+            table=args.table,
             schema=SCHEMA,
             # Declared so they can be filtered on; all metadata round-trips regardless.
             metadata_columns={"neighbourhood": "string", "beds": "int", "outdoor": "bool"},
         )
         print(f"Store over {store.table_ref} in {store.database.id}")
 
-        step("3. Embed and write")
+        step("Embed and write")
         written = store.add_documents(CORPUS)
         print(f"Wrote {len(written)} documents; ids are explicit, so a re-run upserts them")
 
-        step("4. Similarity search")
+        if args.create_index:
+            step("Vector index")
+            report_plan(search_plan(client, store, k=args.k), label="before")
+            created = store.create_index()
+            if created is None:
+                print("  A matching index already exists; nothing to build")
+            else:
+                print(f"  Built {created.index_name} (metric={created.metric}, {created.status})")
+            report_plan(search_plan(client, store, k=args.k), label="after")
+
+        step("Similarity search")
         print(f"Query: {QUESTION!r}")
         print_hits(store.similarity_search_with_score(QUESTION, k=args.k))
 
-        step("5. The same search, filtered")
+        step("The same search, filtered")
         print("Filter: outdoor=True, beds=1 — a predicate inside the ranking query")
         print_hits(
             store.similarity_search_with_score(
@@ -280,7 +326,7 @@ def main() -> None:
             print(done)
             return
 
-        step("6. LangChain retrieval chain over the store")
+        step("LangChain retrieval chain over the store")
         run_chain(store, model=args.model, k=args.k)
     finally:
         client.close()

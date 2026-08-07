@@ -37,6 +37,21 @@ def test_sql_description_warns_that_aggregates_need_a_column() -> None:
     assert "GROUP BY" in description
 
 
+def test_sql_description_asks_for_fully_qualified_table_references() -> None:
+    """A two-part reference resolves but can forfeit an index, silently and with no warning."""
+    description = sql_tool_description()
+    assert "catalog.schema.table" in description
+    assert "all three parts" in description
+    assert "'default'" in description
+
+
+def test_sql_description_does_not_call_the_short_table_form_invalid() -> None:
+    """It resolves correctly; only the acceleration is at stake, and that is being fixed."""
+    description = sql_tool_description()
+    assert "resolves to the same rows" in description
+    assert "invalid" not in description.lower()
+
+
 def test_sql_description_points_at_the_search_tool_when_one_exists() -> None:
     """Verified live: an unguided agent reaches for to_tsvector, which the engine rejects."""
     description = descriptions(search_table=TABLE, search_column=COLUMN)["hotdata_execute_sql"]

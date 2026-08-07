@@ -157,13 +157,14 @@ fixture download and costs a handful of embedding tokens to run.
 
 ### Run it
 
-Steps 1–5 need a Hotdata key and an embedding key, and involve no chat model:
+Every step up to the retrieval chain needs a Hotdata key and an embedding key, and involves
+no chat model:
 
 ```bash
 uv run --group demo --env-file .env python demo/vectorstore_demo.py
 ```
 
-The chain step (6) runs when you name a chat model:
+The retrieval chain runs when you name a chat model:
 
 ```bash
 uv run --group demo --env-file .env python demo/vectorstore_demo.py \
@@ -180,6 +181,12 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --database-i
 # retrieve more documents
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --k 5
 
+# build the vector index, and print the query plan either side of building it
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --create-index
+
+# write into a different managed table, leaving the default one untouched
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --table documents_v2
+
 # stop before the chain step even with a model set
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --skip-chain
 
@@ -191,9 +198,9 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
 
 | Variable | Needed for | Notes |
 |---|---|---|
-| `HOTDATA_API_KEY` | steps 1–6 | |
-| `OPENAI_EMBEDDING_KEY` | steps 3–6 | falls back to `OPENAI_API_KEY`; must be embeddings-scoped |
-| your model provider's key | step 6 | skipped without it, or without `--model` |
+| `HOTDATA_API_KEY` | every step | |
+| `OPENAI_EMBEDDING_KEY` | the write onwards | falls back to `OPENAI_API_KEY`; must be embeddings-scoped |
+| your model provider's key | the retrieval chain | skipped without it, or without `--model` |
 | `DEMO_DATABASE_ID` | optional | pins the managed database by id |
 
 ### What each step does
@@ -206,14 +213,20 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
    `neighbourhood`/`beds`/`outdoor` to real typed columns so they can be filtered on. The
    resolved database record from step 1 is passed straight in, so no id is looked up twice.
 3. **Embed and write** — embeds the eight documents and upserts them in one parquet load.
-4. **Similarity search** — prints hits with their raw cosine distances. This runs with **no
-   vector index**: the scalar `cosine_distance` UDF brute-forces the table, which is correct
-   from row one. The same query is written to match the shape the engine's optimizer rewrites
-   into an HNSW index lookup, so it should get faster once a matching-metric index exists, with
-   nothing in the code changing. That rewrite has not yet been confirmed for these queries, and
-   confirming it needs an index this package cannot create yet.
-5. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
+4. **Vector index** *(only with `--create-index`)* — `EXPLAIN`s the store's own search query,
+   builds the index with `store.create_index()`, then `EXPLAIN`s it again. The plan goes from a
+   full scan to a `USearchExec` lookup with nothing in the code between the two changing, which
+   is the whole argument for the query shape the store emits. Re-running is a no-op: a matching
+   index is left alone.
+5. **Similarity search** — prints hits with their raw cosine distances. Without
+   `--create-index` this runs with **no vector index**: the scalar `cosine_distance` UDF
+   brute-forces the table, which is correct from row one. See
+   [`docs/engine-contract.md`](../docs/engine-contract.md) for the observed plans.
+6. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
    the ranking query's `WHERE`, not around its result, so the filter still returns the top `k`
    *matching* rows rather than whatever survives filtering an already-chosen top `k`.
-6. **Retrieval chain** — `store.as_retriever()` composed into a prompt and a model with LCEL.
+7. **Retrieval chain** — `store.as_retriever()` composed into a prompt and a model with LCEL.
    Nothing in this step knows it is talking to Hotdata.
+
+The script numbers the steps as it runs them, so without `--create-index` step 4 is absent and
+everything after it shifts up by one.

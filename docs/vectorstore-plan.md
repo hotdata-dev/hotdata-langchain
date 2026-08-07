@@ -19,8 +19,8 @@ own recent vector-search engineering:
   through `SubqueryAlias` nodes, which is what makes the fast path reachable from SQL generated
   by anything that aliases tables (ibis, ORMs, BI tools).
 - **`runtimedb`** — the deployed query engine; PR #953 bumped its pin to pick up #31, merged
-  and confirmed live in production. That removes the *deploy* as a blocker; it is not evidence
-  that the rewrite fires for the queries this package generates, which remains unobserved.
+  and confirmed live in production. The rewrite has since been observed firing for the queries
+  this package generates (2026-08-06); see `engine-contract.md`.
 - **`hotdata-ibis`** — gets its own read-side vector helper layer (a `semantic_search()` +
   distance-UDF module), planned and owned separately by Rohan; this plan cross-references it
   but doesn't depend on it.
@@ -168,9 +168,10 @@ using the engine's index-independent scalar distance UDFs (`cosine_distance`, `l
 at all**, always correct, just a full-table brute-force scan without one).
 
 Why this over the table function: this shape is correct from row one with zero
-preconditions, and is intended to upgrade transparently to the HNSW fast path once a
-matching-metric index exists on that column — one code path, no index-vs-no-index branching
-to build or test. (Intended, not observed: see "Live verification" below.) The `vector_search_vector(...)` table function, by contrast, errors loudly
+preconditions, and upgrades transparently to the HNSW fast path once a matching-metric index
+exists on that column — one code path, no index-vs-no-index branching to build or test.
+(Verified 2026-08-06; the observed plans are in `engine-contract.md`.) The
+`vector_search_vector(...)` table function, by contrast, errors loudly
 ("no loaded vector index") if the index doesn't exist yet, which would make a freshly
 constructed `HotdataVectorStore` unusable out of the box — a bad default for a
 partnership-facing integration. The raw `embedding` column is never selected in this path
@@ -187,10 +188,11 @@ are simply not filterable in v1.
 Filter predicates always go in the *same* query, in `WHERE`, ahead of `ORDER BY`/`LIMIT` —
 never as an outer query wrapping an already-computed top-k result, which would silently
 return fewer than `k` rows (a filter applied after top-k selection can only shrink the result,
-never re-fill it). Whether a `WHERE`-filtered query still triggers the HNSW fast path is
-explicitly **unverified** (attribute-filtered ANN is a harder capability many engines don't
-support natively) — brute-force-but-correct is an accepted v1 cost, not a blocker, consistent
-with the engine's own "brute force is always correct, just not accelerated" design.
+never re-fill it). A `WHERE`-filtered query **does** still reach the HNSW fast path, with the
+predicate pushed into the index lookup (`filtered=true` in the plan) — verified 2026-08-06,
+see `engine-contract.md`. This plan had assumed the opposite and accepted
+brute-force-but-correct as a v1 cost, since attribute-filtered ANN is a harder capability many
+engines lack; that caveat no longer applies.
 
 Ids and filter literals are charset-validated before SQL interpolation, reusing
 `hotdata_langchain/_sql.py`'s `validate_identifier`/`quote_literal` — reject anything outside a
@@ -199,11 +201,21 @@ list of floats we format ourselves.
 
 ### Dimension binding
 
-A vector's dimension is only knowable after the first `embed_documents` call, but
-`create_index` needs `dimensions` up front. Sequencing inside `from_texts`: (1) construct the
-store, (2) call `add_texts` (embeds and writes rows — dimension is now known from the vectors
-just embedded), (3) only then, if `create_index=True` was requested, create the index with the
-now-known dimension. Index creation never precedes the first write.
+This plan assumed `create_index` would need `dimensions` up front, and that the dimension was
+therefore something the store had to learn from its first `embed_documents` call and pass on.
+**That turned out to be wrong, and the sequencing it implied turned out to be right anyway.**
+For a plain vector index — one over a column that already holds vectors — the engine reads the
+width off the *stored data*, and `dimensions` applies only to the provider-backed path where
+the engine does the embedding itself. A supplied value is ignored here.
+
+So the store passes no `dimensions` at all, and the ordering inside `from_texts` still holds
+for a different reason: (1) construct the store, (2) `add_texts`, which embeds and writes,
+(3) only then create the index, which now has stored rows to measure. Index creation never
+precedes the first write, because before it there is nothing to read a width from.
+
+One consequence: when detection fails, no caller argument can rescue it. That is what makes
+[#52](https://github.com/hotdata-dev/hotdata-langchain/issues/52) an engine fix rather than a
+client one.
 
 ### `l2` relevance-score caveat
 
@@ -253,10 +265,17 @@ match the table a store is opened against — pointing a differently-configured 
 existing table fails on the first write rather than silently writing partial rows. Documented
 in the class docstring and README.
 
-Still outstanding: `EXPLAIN` the primary query before and after provisioning a
-matching-metric index to confirm the plan shows the USearch-rewritten node, and `EXPLAIN` a
-`WHERE`-filtered query to settle whether filtered queries still reach the fast path. Both need
-an index, so they belong with Phase 3.
+**Fast path verified 2026-08-06.** Both outstanding `EXPLAIN` questions are settled, and the
+observed plans are recorded in `engine-contract.md`. The primary query plans as a full scan
+with no index and as `USearchExec` once a matching-metric index exists. A `WHERE`-filtered
+query **also** reaches the fast path, with the predicate pushed into the index lookup
+(`filtered=true`) — better than this plan assumed, and it retires the "brute-force-but-correct
+is an accepted cost" caveat under Filtering above.
+
+Confirmed as forfeiting the rewrite, silently: projecting the `embedding` column, a distance
+function the index was not built for, and omitting `LIMIT`. The store avoids all three by
+construction, which is worth a regression test now that the boundary is known rather than
+assumed.
 
 ## Phasing
 
@@ -267,23 +286,25 @@ an index, so they belong with Phase 3.
    mergeable `VectorStore` on its own — `as_retriever()`, chains, and evals all work once this
    lands, independent of anything below.
 2. **MMR** — its own PR; isolated correctness surface (the raw-vector read path).
-3. **Self-provisioning** — gated on the `sdk-python` dependency below. Adds
-   `from_texts(..., create_index=True)`.
+3. **Self-provisioning** — shipped. `create_index()` and `from_texts(..., create_index=True)`,
+   on `hotdata-framework` 0.10.0's `HotdataClient.create_index`. The store always builds for
+   its own `distance`: the server defaults an unspecified metric to `l2` while this store
+   defaults to `cosine`, and a metric the query's distance function was not built for silently
+   full-scans instead of erroring.
 4. Docs/examples are pulled into Phase 1 rather than deferred to the end — this is the piece
    the LangChain conversation will exercise first.
 
 ### Tracking
 
-Each phase is its own issue and its own PR, under one tracking issue. As of writing **none of
-these exist yet** — the only related issues are #39 (the agent-facing tool surface, a different
-surface) and #36 item 2 (`create_index`, which gates Phase 3 alone).
+Each phase is its own issue and its own PR, under the epic
+[#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47).
 
-| Issue to file | Scope | Blocked by |
+| Phase | Scope | State |
 |---|---|---|
-| Epic: `HotdataVectorStore` | tracking; links this plan and the phases below | — |
-| Phase 1 — MVP | `add_texts`, the four `similarity_search*`, `get_by_ids`, `delete`, `from_texts`, promoted-column filtering, unit tests, `examples/langchain_vectorstore.py`, README, CHANGELOG | nothing |
-| Phase 2 — MMR | own PR; raw-vector read path | Phase 1 |
-| Phase 3 — self-provisioning | `from_texts(..., create_index=True)` | #36 item 2 |
+| Epic: `HotdataVectorStore` | tracking; links this plan and the phases below | [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47) |
+| Phase 1 — MVP | `add_texts`, the four `similarity_search*`, `get_by_ids`, `delete`, `from_texts`, promoted-column filtering, unit tests, `examples/langchain_vectorstore.py`, README, CHANGELOG | shipped in 0.4.0 ([#48](https://github.com/hotdata-dev/hotdata-langchain/issues/48)) |
+| Phase 2 — MMR | own PR; raw-vector read path | not filed; independent of Phase 3 |
+| Phase 3 — self-provisioning | `create_index()`, `from_texts(..., create_index=True)` | shipped |
 
 Phase 1 is a complete, mergeable `VectorStore` on its own: `as_retriever()`, chains and evals
 all work once it lands, with no index provisioned and no further phases.
@@ -294,24 +315,19 @@ all work once it lands, with no index provisioned and no further phases.
   0.3.0: `resolve_database_by_id` fetches by `GET /databases/{id}` with no by-name fallback, and
   `query_scope` rejects an unresolved string scope. This plan's constructor is built on it; see
   "File and constructor" above. Nothing further needed.
-- **`sdk-python` (`hotdata_framework.HotdataClient`) — in scope, ours to build.** A
-  `create_vector_index` addition. Confirmed via full grep: zero existing index-related code in
-  the package today. The raw generated `hotdata.api.indexes_api.IndexesApi.create_index` +
-  `CreateIndexRequest` already support everything needed (`columns`, `metric`, `dimensions`,
-  `embedding_provider_id`, `output_column`, an async job-polling path). Follows
-  `create_managed_database`'s exact shape: resolve `database` → `default_connection_id`, build
-  the request, call the raw API, wrap `ApiException` → `RuntimeError(api_error_message(e))`,
-  return a frozen dataclass built field-by-field from `IndexInfoResponse` (or poll
-  `SubmitJobResponse.status_url` for the async path, reusing the existing polling-loop style
-  already in `client.py`). This addition only blocks Phase 3 (self-provisioning) above —
-  Phases 1–2 work today regardless, against an existing index, a not-yet-existing index, or no
-  index ever, by construction of the SQL-path decision above.
+- **`sdk-python-framework` (`hotdata_framework.HotdataClient`) — shipped in 0.10.0.** Landed as
+  the general `create_index(..., index_type=...)` rather than the `create_vector_index` this
+  plan scoped, since `CreateIndexRequest` already accepted `"bm25"` and `"sorted"` too; one
+  method covers self-provisioning for all three instead of building it twice. It polls the
+  build job to a terminal state and raises with its `error_message`, because the submit call
+  reports success for builds that later fail. It only ever blocked Phase 3 — Phases 1–2 worked
+  regardless, against an existing index, a not-yet-existing index, or no index ever, by
+  construction of the SQL-path decision above.
 - **`runtimedb` PR #953 — merged and live in production.** Pin-bump to pick up
   `datafusion-vector-search-ext` PR #31, confirmed deployed. Our SQL was designed to be correct
-  either way (the scalar UDFs work with no index at all), so this was never a blocker. What it
-  establishes is that the engine carrying the rewrite rule is deployed — **not** that the rule
-  fires for the queries this package generates. That is still unobserved; see "Live
-  verification". No longer a dependency to track, but not a verification either.
+  either way (the scalar UDFs work with no index at all), so this was never a blocker. The rule
+  has since been observed firing for the queries this package generates; see "Live
+  verification" and `engine-contract.md`. No longer a dependency to track.
 - **`hotdata-ibis` vector helper layer — external, owned separately, tracked for consistency
   only.** Not a dependency of this work. Cross-referenced so both surfaces target the same
   engine contract (same distance-function names, same "never select the vector column"

@@ -7,16 +7,19 @@ is where a Hotdata-specific implementation can be wrong while still conforming.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
+from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase, ManagedTable
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.vectorstores import VectorStore
 
 from hotdata_langchain.vectorstore import HotdataVectorStore
+from tests.conftest import vector_index
 from tests.fake_hotdata import FakeHotdataClient
 
 EMBEDDING_SIZE = 6
@@ -467,3 +470,219 @@ def test_as_retriever_works_off_the_base_class(store: HotdataVectorStore) -> Non
     retriever = store.as_retriever(search_kwargs={"k": 1})
 
     assert [document.id for document in retriever.invoke("alpha")] == ["one"]
+
+
+# ---------------------------------------------------------------------- indexing
+
+
+@pytest.mark.parametrize("distance", ["cosine", "l2", "dot"])
+def test_create_index_builds_for_the_stores_own_metric(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+    indexes_api: MagicMock,
+    distance: str,
+) -> None:
+    """The metric is what earns the index lookup; the server would otherwise default to l2."""
+    store = _build_store(fake_client, managed_db, distance=distance)
+    store.add_texts(["alpha"], ids=["one"])
+    store.create_index()
+
+    assert fake_client.indexes[0]["metric"] == distance
+
+
+def test_create_index_requests_one_vector_index_over_the_embedding_column(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """No dimensions: the engine reads the width off stored data, and ignores a supplied one."""
+    store.add_texts(["alpha"], ids=["one"])
+    store.create_index()
+
+    request = fake_client.indexes[0]
+    assert request["index_type"] == "vector"
+    assert request["columns"] == ["embedding"]
+    assert "dimensions" not in request
+    assert request["timeout_s"] > 300.0
+
+
+def test_create_index_is_a_no_op_when_a_matching_index_exists(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric="cosine")]
+    )
+
+    assert store.create_index() is None
+    assert fake_client.indexes == []
+
+
+def test_create_index_rejects_an_existing_index_on_another_metric(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """A mismatched index is not an error at query time; it just silently full-scans."""
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric="l2")]
+    )
+
+    with pytest.raises(ValueError, match="silently falls back to a full scan"):
+        store.create_index()
+    assert fake_client.indexes == []
+
+
+def test_create_index_ignores_an_index_on_another_column(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    bm25 = SimpleNamespace(
+        index_name="content_bm25",
+        index_type="bm25",
+        columns=["content"],
+        metric=None,
+        status="ready",
+    )
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(indexes=[bm25])
+    store.add_texts(["alpha"], ids=["one"])
+    store.create_index()
+
+    assert fake_client.indexes[0]["columns"] == ["embedding"]
+
+
+def test_from_texts_does_not_index_unless_asked(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+    indexes_api: MagicMock,
+) -> None:
+    HotdataVectorStore.from_texts(
+        ["alpha"],
+        DeterministicFakeEmbedding(size=EMBEDDING_SIZE),
+        client=fake_client,
+        database_id=managed_db.id,
+    )
+
+    assert fake_client.indexes == []
+
+
+def test_from_texts_indexes_after_writing(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+    indexes_api: MagicMock,
+) -> None:
+    """An index built before the first write has no stored data to read a width from."""
+    HotdataVectorStore.from_texts(
+        ["alpha", "beta"],
+        DeterministicFakeEmbedding(size=EMBEDDING_SIZE),
+        ids=["one", "two"],
+        create_index=True,
+        client=fake_client,
+        database_id=managed_db.id,
+    )
+
+    assert fake_client.indexes[0]["rows_at_build"] == 2
+
+
+def test_create_index_tolerates_losing_a_build_race(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """Absent when checked, present once another process's build returns."""
+    indexes_api.return_value.list_indexes.side_effect = [
+        SimpleNamespace(indexes=[]),
+        SimpleNamespace(indexes=[vector_index(metric="cosine")]),
+    ]
+    fake_client.create_index = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("index already exists")
+    )
+
+    assert store.create_index() is None
+
+
+def test_create_index_still_raises_when_the_build_really_failed(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """The engine's dimension-detection failure must not be read as a lost race."""
+    fake_client.create_index = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("could not detect dimension for 'embedding'")
+    )
+
+    with pytest.raises(RuntimeError, match="could not detect dimension"):
+        store.create_index()
+
+
+def test_create_index_does_not_swallow_a_failure_that_left_a_pending_index(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """A listed-but-unbuilt index cannot be told from a lost race, so the error wins."""
+    indexes_api.return_value.list_indexes.side_effect = [
+        SimpleNamespace(indexes=[]),
+        SimpleNamespace(indexes=[vector_index(status="pending")]),
+    ]
+    fake_client.create_index = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("build rejected")
+    )
+
+    with pytest.raises(RuntimeError, match="build rejected"):
+        store.create_index()
+
+
+def test_create_index_matches_the_metric_case_insensitively(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """The reported metric is the server's rendering; only `cosine` is verified verbatim."""
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric="COSINE")]
+    )
+
+    assert store.create_index() is None
+
+
+def test_create_index_reports_an_index_whose_metric_is_unknown(
+    store: HotdataVectorStore,
+    indexes_api: MagicMock,
+) -> None:
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric=None)]
+    )
+
+    with pytest.raises(ValueError, match="reports no metric"):
+        store.create_index()
+
+
+def test_index_lookup_translates_api_errors(
+    store: HotdataVectorStore,
+    indexes_api: MagicMock,
+) -> None:
+    """Every other failure on this class is a RuntimeError; this one was leaking raw."""
+    indexes_api.return_value.list_indexes.side_effect = ApiException(status=403)
+
+    with pytest.raises(RuntimeError):
+        store.create_index()
+
+
+def test_create_index_leaves_an_in_flight_build_alone(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """Start-up must not fight a build another process already started."""
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(status="pending")]
+    )
+
+    assert store.create_index() is None
+    assert fake_client.indexes == []

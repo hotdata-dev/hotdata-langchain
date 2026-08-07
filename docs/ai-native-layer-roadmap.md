@@ -6,8 +6,8 @@ The team's shared vision for `hotdata-langchain` is a single `query_hotdata(...)
 "the agent decides what to ask, not how to fetch it" — routing across four pathways (SQL,
 full-text/BM25, vector/semantic, point lookups), merging/ranking results, with caching and
 permissions underneath. Caching (`HotdataToolCache`) is built but still an unmerged draft
-(PR #33, currently parked); `HotdataVectorStore` is planned (see
-[`vectorstore-plan.md`](./vectorstore-plan.md)).
+(PR #33, currently parked); `HotdataVectorStore` shipped in 0.4.0 and self-provisions its
+index as of the release after it (see [`vectorstore-plan.md`](./vectorstore-plan.md)).
 
 A verification pass (2026-07-22) checked three previously-unverified assumptions directly
 against the codebase, across `monopoly`, `runtimedb`, `datafusion-vector-search-ext`,
@@ -64,7 +64,7 @@ tie-breaking) are settled empirically.
 
 ## Checklist
 
-### Tier 1 — buildable now, zero blockers (this repo + `sdk-python`)
+### Tier 1 — buildable now, zero blockers (this repo + `sdk-python-framework`)
 
 - [x] **BM25 tool.** Shipped as `hotdata_langchain/search.py` — `hotdata_search_text`, with the
       corpus pinned at construction (nothing lets an agent discover which columns are indexed,
@@ -76,13 +76,28 @@ tie-breaking) are settled empirically.
 - [x] **Schema discovery.** `hotdata_describe_tables` over `information_schema`, registered by
       default. Without it an agent guesses column names — and got away with it only because
       the demo fixture is a famous public dataset.
-- [ ] **`HotdataVectorStore` MVP.** Fully scoped in [`vectorstore-plan.md`](./vectorstore-plan.md)
-      — `add_texts`, `similarity_search(_by_vector)`, `get_by_ids`, `delete`, `from_texts`,
-      equality metadata filtering. No open design questions left, no code written yet.
-- [ ] **`create_index` on `HotdataClient` (`sdk-python`).** Generalize the originally-scoped
-      `create_vector_index` into `create_index(..., index_type=...)` — `CreateIndexRequest`
-      already accepts `"bm25"` as well as `"vector"`, so one SDK method covers self-provisioning
-      for both instead of building it twice.
+- [x] **`HotdataVectorStore` MVP.** Shipped in 0.4.0 — `add_texts`/`add_documents`, the four
+      `similarity_search*` variants, `get_by_ids`, `delete`, `from_texts`, and equality metadata
+      filtering over promoted typed columns. Validated against LangChain's published
+      conformance suite (`langchain-tests`) as well as this package's own tests, and verified
+      end to end against a live workspace. Design: [`vectorstore-plan.md`](./vectorstore-plan.md).
+      Self-provisioned indexes followed (below); MMR is the one phase still open under
+      [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47).
+- [x] **Vector fast path verified (2026-08-06).** The read path's central assumption — that a
+      plain `ORDER BY <distance_fn>(...) LIMIT k` is rewritten into an index lookup — is now
+      observed rather than inferred, along with the three query shapes that silently forfeit it.
+      A `WHERE`-filtered query reaches the fast path too, which the plan had assumed it would
+      not. Plans recorded in [`engine-contract.md`](./engine-contract.md).
+- [x] **`create_index` on `HotdataClient` (`sdk-python-framework`).** Shipped in
+      `hotdata-framework` 0.10.0 as the general `create_index(..., index_type=...)` rather than
+      the originally-scoped `create_vector_index`, since `CreateIndexRequest` already accepted
+      `"bm25"` and `"sorted"` too. It polls the build job and raises with its `error_message`,
+      because the submit call reports success for builds that later fail.
+- [x] **Self-provisioned vector index (Phase 3 of [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47)).**
+      `HotdataVectorStore.create_index()` and `from_texts(..., create_index=True)`, always built
+      for the store's own `distance` — the server would otherwise default to `l2`, and a metric
+      the query's distance function was not built for full-scans silently. This is what makes
+      the verified fast path reachable without leaving Python for the CLI.
 
 ### Tier 2 — needs scoped backend work, not exploratory
 
@@ -114,12 +129,20 @@ per-item evidence lives in the linked issues; the verified engine behaviour behi
 Grouped by code surface:
 
 - **`hotdata-framework` client gaps** ([#36](https://github.com/hotdata-dev/hotdata-langchain/issues/36)) — errors discard the engine's message (raises
-  `e.reason`, "Bad Request", losing the actionable text); no `create_index`;
+  `e.reason`, "Bad Request", losing the actionable text); `create_index` since fixed in 0.10.0;
   `resolve_managed_database` falls back to matching non-unique display names; `from_env()`
   silently picks a workspace. The first is the one with demonstrated impact on agent behaviour.
 - **`runtimedb` engine gaps** ([#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)) — ungrouped `COUNT(*)`/`COUNT(1)` rejected while
   `COUNT(<column>)` works (probable bug, and the shape an agent writes first); no
   hybrid/RRF primitive for the eventual server-side fusion.
+- **Vector index dimension detection** ([#52](https://github.com/hotdata-dev/hotdata-langchain/issues/52)) — building an index over an existing
+  embedding column fails on some tables with `could not detect dimension`, reproducibly, while
+  structurally identical tables succeed. Four candidate triggers were tested and ruled out. The
+  width is read from stored data rather than supplied, so no client argument works around it.
+- **ANN lookup key is built from the table reference as written** ([datafusion-vector-search-ext#32](https://github.com/hotdata-dev/datafusion-vector-search-ext/issues/32)) —
+  a two-part `schema.table` reference resolves correctly but forfeits the vector index, with
+  nothing reported. Worked around in the SQL tool's description until the rule resolves the
+  reference against session defaults first.
 - **id-first addressing in this repo** ([#38](https://github.com/hotdata-dev/hotdata-langchain/issues/38)) — breaking; mirrors the `hotdata-dlt-destination`
   change (its PR #59) that removed by-name resolution entirely. Worth landing before the next
   release rather than shipping two breaking versions.

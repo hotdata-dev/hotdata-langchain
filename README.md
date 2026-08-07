@@ -118,7 +118,11 @@ the tool surface lets an agent discover which columns are indexed, and the engin
 outright rather than falling back to a scan when a column has no BM25 index.
 
 Inside a managed database the built-in catalog is always `default`, so a managed table reads
-as `default.<schema>.<table>` when `database_id=` scopes the query to it.
+as `default.<schema>.<table>` when `database_id=` scopes the query to it. Write all three
+parts: a two-part `schema.table` reference resolves and returns the same rows, but the engine
+matches its index lookup on the reference as written, so the short form can quietly forfeit an
+index. The SQL tool's description tells the model this; `HotdataVectorStore` and the search
+tool emit the full form themselves.
 
 For more than one searchable corpus, build the tools yourself and give each a distinct name
 and description — the agent then routes on the descriptions:
@@ -195,19 +199,37 @@ LIMIT 4
 ```
 
 That query is correct with **no index at all** — it brute-forces the table — so a store is
-usable the moment you create it. Today every search is a full scan.
+usable the moment you create it, before any indexing exists.
 
-It is also written to match the shape the engine's optimizer rewrites into an HNSW index
-lookup: a plain column, a literal `ARRAY[...]`, `ASC`, a `LIMIT`, no vector column in the
-output, and an index built on the same metric. The intent is that the same query gets faster
-once such an index exists, with nothing in your code changing. **That rewrite has not yet been
-confirmed end to end for these queries** — the conditions come from reading the engine's
-optimizer rule, and verifying it needs an index this package cannot yet create. Tracked in
-[`docs/vectorstore-plan.md`](docs/vectorstore-plan.md); until then, treat the fast path as the
-design intent rather than a measured property.
+Once a vector index built on the same metric exists on the embedding column, the engine
+rewrites that identical query into an index lookup, with nothing in your code changing. This
+is confirmed against a live engine: the query plan switches to a `USearchExec` node, and a
+`WHERE` filter is pushed *into* the index lookup rather than costing you the fast path. See
+[`docs/engine-contract.md`](docs/engine-contract.md) for the observed plans.
 
-Provisioning an index is not part of this package yet; create one through the Hotdata API or
-CLI, matching its metric to the `distance=` you configured.
+Three things forfeit the rewrite and fall back to a full scan, silently and without error:
+projecting the raw `embedding` column, querying with a distance function the index was not
+built for, and omitting `LIMIT`. This class does none of them.
+
+The store builds that index for you:
+
+```python
+store.create_index()                       # or, in one step:
+store = hl.HotdataVectorStore.from_texts(
+    texts, embeddings, client=client, database_id="dbid...", create_index=True
+)
+```
+
+Build it *after* the first write. The engine reads the vector width off stored data, so there
+is nothing to measure before then. The metric always comes from this store's `distance`, which
+is what earns the rewrite — leaving it to the server would build an `l2` index, its default,
+that never serves a `cosine` search. Calling `create_index()` when a matching index already
+exists does nothing and returns `None`, so it is safe on every start-up; an index that already
+exists under a *different* metric raises, since only you know whether the index or the
+`distance=` is the mistake.
+
+Builds are polled to completion, up to `timeout_s=900`. Pass `wait=False` to return as soon as
+the build is accepted and check the job yourself.
 
 `distance=` accepts `"cosine"` (default), `"l2"` and `"dot"`. Prefer `cosine`: its relevance
 score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean

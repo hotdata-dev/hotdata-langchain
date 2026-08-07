@@ -45,6 +45,12 @@ def sql_tool_description(
     filter on text you already know rather than a way to find relevant rows: stating
     only that it "works" was observed to pull the model into `ILIKE '%word%'` instead of
     searching, which returns unranked results and misses related wording.
+
+    Table references are asked for in full. A two-part `schema.table` reference resolves
+    and returns correct rows, but the engine's index-lookup rewrite matches on the
+    reference as written, so the short form can silently forfeit an index and fall back
+    to a scan (datafusion-vector-search-ext#32). The wording states the preference rather
+    than the current defect, so it stays accurate once that is fixed.
     """
     text_guidance = (
         f"To find which rows are about something, use the {search_tool_name} tool — it "
@@ -70,8 +76,10 @@ def sql_tool_description(
         f"{text_guidance}\n"
         "An aggregate query must reference at least one column: COUNT(*) and COUNT(1) "
         "are rejected on their own, so write COUNT(<column>) or add a GROUP BY.\n"
-        "Tables are addressed as catalog.schema.table; inside a managed database the "
-        "catalog is always 'default' (schema-qualified names also resolve). "
+        "Address tables with all three parts: catalog.schema.table. Inside a managed "
+        "database the catalog is always 'default'. A two-part schema.table reference "
+        "resolves to the same rows but is not always index-accelerated, so write the "
+        "full form. "
         f"{discovery}."
     )
 
