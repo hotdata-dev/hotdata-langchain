@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
+from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase, ManagedTable
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.vectorstores import VectorStore
@@ -540,7 +541,11 @@ def test_create_index_ignores_an_index_on_another_column(
     indexes_api: MagicMock,
 ) -> None:
     bm25 = SimpleNamespace(
-        index_name="content_bm25", index_type="bm25", columns=["content"], metric=None
+        index_name="content_bm25",
+        index_type="bm25",
+        columns=["content"],
+        metric=None,
+        status="ready",
     )
     indexes_api.return_value.list_indexes.return_value = SimpleNamespace(indexes=[bm25])
     store.add_texts(["alpha"], ids=["one"])
@@ -612,4 +617,58 @@ def test_create_index_still_raises_when_the_build_really_failed(
     )
 
     with pytest.raises(RuntimeError, match="could not detect dimension"):
+        store.create_index()
+
+
+def test_create_index_does_not_swallow_a_failure_that_left_a_pending_index(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """A listed-but-unbuilt index cannot be told from a lost race, so the error wins."""
+    indexes_api.return_value.list_indexes.side_effect = [
+        SimpleNamespace(indexes=[]),
+        SimpleNamespace(indexes=[vector_index(status="pending")]),
+    ]
+    fake_client.create_index = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("build rejected")
+    )
+
+    with pytest.raises(RuntimeError, match="build rejected"):
+        store.create_index()
+
+
+def test_create_index_matches_the_metric_case_insensitively(
+    store: HotdataVectorStore,
+    fake_client: FakeHotdataClient,
+    indexes_api: MagicMock,
+) -> None:
+    """The reported metric is the server's rendering; only `cosine` is verified verbatim."""
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric="COSINE")]
+    )
+
+    assert store.create_index() is None
+
+
+def test_create_index_reports_an_index_whose_metric_is_unknown(
+    store: HotdataVectorStore,
+    indexes_api: MagicMock,
+) -> None:
+    indexes_api.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(metric=None)]
+    )
+
+    with pytest.raises(ValueError, match="reports no metric"):
+        store.create_index()
+
+
+def test_index_lookup_translates_api_errors(
+    store: HotdataVectorStore,
+    indexes_api: MagicMock,
+) -> None:
+    """Every other failure on this class is a RuntimeError; this one was leaking raw."""
+    indexes_api.return_value.list_indexes.side_effect = ApiException(status=403)
+
+    with pytest.raises(RuntimeError):
         store.create_index()

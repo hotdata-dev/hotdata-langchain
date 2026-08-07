@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The index is always built for the store's own `distance`, because a query whose distance
   function is not the index's metric silently full-scans instead of erroring, and the server
   would otherwise default to `l2` while this store defaults to `cosine`. An index that already
-  exists under a different metric raises, naming both. A matching one is a no-op, so calling
-  this on every start-up is safe, including from several processes at once.
+  exists under a different metric raises, naming both. A matching one already built is a no-op,
+  so calling this on every start-up is safe; racing a build that is still in progress raises
+  rather than reporting a success it cannot verify.
 
 ### Changed
 

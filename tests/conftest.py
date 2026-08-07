@@ -39,10 +39,18 @@ def databases_api(managed_db: ManagedDatabase) -> Iterator[MagicMock]:
         yield api
 
 
-def vector_index(name: str = "vectors_embedding_vector", metric: str = "cosine") -> SimpleNamespace:
+def vector_index(
+    name: str = "vectors_embedding_vector",
+    metric: str | None = "cosine",
+    status: str = "ready",
+) -> SimpleNamespace:
     """An entry as ``IndexesApi.list_indexes`` reports one."""
     return SimpleNamespace(
-        index_name=name, index_type="vector", columns=["embedding"], metric=metric
+        index_name=name,
+        index_type="vector",
+        columns=["embedding"],
+        metric=metric,
+        status=status,
     )
 
 

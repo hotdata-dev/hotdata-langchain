@@ -12,8 +12,10 @@ from typing import Any, Literal, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from hotdata import IndexesApi
+from hotdata.api.indexes_api import IndexesApi
+from hotdata.exceptions import ApiException
 from hotdata_framework import DEFAULT_SCHEMA, CreateIndexResult, HotdataClient, ManagedDatabase
+from hotdata_framework.databases import api_error_message
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
@@ -459,18 +461,53 @@ class HotdataVectorStore(VectorStore):
 
     # ------------------------------------------------------------------ index
 
-    def _existing_vector_index(self) -> Any | None:
-        listed = (
-            IndexesApi(self._client.api)
-            .list_indexes(self._database.default_connection_id, self._schema, self._table)
-            .indexes
-        )
+    def _existing_vector_index(self, *, ready_only: bool = False) -> Any | None:
+        """Return a vector index on the embedding column, whatever it is named.
+
+        Indexes are invisible to SQL, so this is the control plane's to answer. The name
+        is not part of the match: what decides whether a search is served is that some
+        vector index covers the column, not what it was called.
+        """
+        try:
+            listed = (
+                IndexesApi(self._client.api)
+                .list_indexes(self._database.default_connection_id, self._schema, self._table)
+                .indexes
+            )
+        except ApiException as e:
+            raise RuntimeError(api_error_message(e)) from e
         for index in listed or []:
-            if _wire_value(index.index_type) == "vector" and EMBEDDING_COLUMN in (
-                index.columns or []
-            ):
-                return index
+            if _wire_value(index.index_type) != "vector":
+                continue
+            if EMBEDDING_COLUMN not in (index.columns or []):
+                continue
+            if ready_only and _wire_value(index.status) != "ready":
+                continue
+            return index
         return None
+
+    def _require_metric_match(self, index: Any) -> None:
+        """Raise unless ``index`` serves this store's distance function.
+
+        Compared case-insensitively: the reported metric is the server's rendering of
+        what was requested, and only ``cosine`` has been seen echoed back verbatim.
+        """
+        metric = _wire_value(index.metric).lower() if index.metric is not None else None
+        if metric == self._distance:
+            return
+        if metric is None:
+            raise ValueError(
+                f"{self.table_ref} already has vector index {index.index_name!r}, which "
+                f"reports no metric, so whether it serves {self._distance!r} searches "
+                f"cannot be determined. Inspect or drop it before building another."
+            )
+        raise ValueError(
+            f"{self.table_ref} already has vector index {index.index_name!r} with metric "
+            f"{metric!r}, but this store searches with {self._distance!r}. A query whose "
+            f"distance function does not match the index silently falls back to a full "
+            f"scan. Drop that index, or construct the store with distance={metric!r} if "
+            f"that is a metric this store supports ({sorted(DISTANCE_FUNCTIONS)})."
+        )
 
     def create_index(
         self,
@@ -483,10 +520,12 @@ class HotdataVectorStore(VectorStore):
         """Build the vector index that turns this store's searches into index lookups.
 
         Returns ``None`` when an index on the embedding column already matches this
-        store's ``distance``, so calling this on every start-up is safe — including from
-        several processes at once, where the one that loses the race finds the index
-        another built and returns ``None`` rather than failing. A build that fails for
-        any other reason still raises.
+        store's ``distance``, so calling this on every start-up is safe. A process that
+        loses a build race to another gets ``None`` too, but only once that other build
+        reports ready: a rejected build whose index is merely *listed* cannot be told
+        apart from one that registered and then failed, and reporting success for the
+        second would leave searches full-scanning with nothing said. Racing a build still
+        in progress therefore raises rather than resolving quietly.
 
         Any vector index on the embedding column counts, whatever it is named, since
         what matters is whether searches are served. So an ``index_name`` is only used
@@ -507,15 +546,7 @@ class HotdataVectorStore(VectorStore):
         """
         existing = self._existing_vector_index()
         if existing is not None:
-            metric = _wire_value(existing.metric) if existing.metric is not None else None
-            if metric != self._distance:
-                raise ValueError(
-                    f"{self.table_ref} already has vector index {existing.index_name!r} "
-                    f"with metric {metric!r}, but this store searches with "
-                    f"{self._distance!r}. A query whose distance function does not match "
-                    f"the index silently falls back to a full scan. Drop that index, or "
-                    f"construct the store with distance={metric!r}."
-                )
+            self._require_metric_match(existing)
             logger.debug("vector index %s already exists", existing.index_name)
             return None
 
@@ -533,8 +564,8 @@ class HotdataVectorStore(VectorStore):
                 poll_interval_s=poll_interval_s,
             )
         except RuntimeError:
-            built = self._existing_vector_index()
-            if built is None or _wire_value(built.metric) != self._distance:
+            built = self._existing_vector_index(ready_only=True)
+            if built is None or _wire_value(built.metric).lower() != self._distance:
                 raise
             logger.debug("vector index %s was built concurrently", built.index_name)
             return None
