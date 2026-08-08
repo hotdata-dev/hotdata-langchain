@@ -252,9 +252,10 @@ docs = store.max_marginal_relevance_search(
 retriever = store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 20})
 ```
 
-`lambda_mult` is the balance: `1.0` is pure relevance and gives back the similarity ranking,
-`0.0` is pure variety. `fetch_k` is the candidate pool, and is raised to `k` if you pass less.
-`filter=` works the same as it does on `similarity_search`.
+`lambda_mult` is the balance: `1.0` is pure relevance, `0.0` is pure variety. `fetch_k` is the
+candidate pool, and is raised to `k` if you pass less. `filter=` works the same as it does on
+`similarity_search`. Results come back in selection order — only the first is the nearest to
+the query, and a later pick is often further away than one it was chosen over.
 
 **Expect to tune `lambda_mult` upward.** The default of `0.5` is LangChain's, kept so that
 code ported from another vector store behaves identically — but it weights relevance and
@@ -271,9 +272,11 @@ forfeits the index lookup — the candidate fetch is a full scan even where an i
 bounded by `fetch_k`. Use it where variety in the retrieved set matters more than the cost of
 scanning; `similarity_search` stays the fast path.
 
-Variety is scored by cosine similarity whatever `distance=` is set to. That is LangChain's
-own convention, shared by every implementation of this interface: under `l2` the candidate
-pool is L2-nearest while the selection among those candidates is cosine-based.
+Both halves of that score use cosine similarity whatever `distance=` is set to. That is
+LangChain's own convention, shared by every implementation of this interface: under `l2` the
+candidate pool is L2-nearest while the selection among those candidates is cosine-based. So
+`lambda_mult=1.0` gives back this store's similarity ranking under `cosine` only — under `l2`
+and `dot` it reorders the candidate pool by cosine instead.
 
 ### Letting an agent search the store
 

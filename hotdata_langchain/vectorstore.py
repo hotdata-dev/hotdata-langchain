@@ -471,13 +471,17 @@ class HotdataVectorStore(VectorStore):
         filter: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[Document]:
-        """Return ``k`` documents chosen for relevance *and* variety, nearest first.
+        """Return ``k`` documents chosen for relevance *and* variety, in selection order.
 
         The ``k`` nearest rows are often near-duplicates of each other, which spends every
         slot on one fact. This ranks ``fetch_k`` candidates by distance as usual, then
         selects ``k`` of them one at a time, each scored against both the query and what
-        is already selected. ``lambda_mult`` sets the balance: ``1.0`` is pure relevance
-        and reproduces the similarity ranking, ``0.0`` is pure variety.
+        is already selected. ``lambda_mult`` sets the balance: ``1.0`` is pure relevance,
+        ``0.0`` is pure variety.
+
+        Only the first document returned is the nearest to the query. The rest come back
+        in the order they were selected, which is not distance order — a later pick is
+        frequently further away than one it was chosen over.
 
         ``fetch_k`` below ``k`` is raised to ``k``, so this always returns as many
         documents as the store holds up to ``k``.
@@ -486,10 +490,14 @@ class HotdataVectorStore(VectorStore):
         forfeits the engine's index lookup — the candidate fetch is a full scan even
         where an index exists. ``fetch_k`` bounds it.
 
-        Variety is scored by cosine similarity whatever this store's ``distance`` is,
+        Both terms are scored by cosine similarity whatever this store's ``distance`` is,
         which is LangChain's own convention: under ``"l2"`` the candidate pool is
-        L2-nearest while the selection among those candidates is cosine-based.
+        L2-nearest while the selection among those candidates is cosine-based. So
+        ``lambda_mult=1.0`` reproduces this store's similarity ranking under ``"cosine"``
+        only; under ``"l2"`` and ``"dot"`` it reorders the pool by cosine instead.
         """
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
         rows = self._rows(self._search_sql(embedding, max(fetch_k, k), filter, with_vectors=True))
         selected = maximal_marginal_relevance(
             np.array(embedding, dtype=np.float32),

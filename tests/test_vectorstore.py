@@ -489,9 +489,24 @@ def test_mmr_drops_a_near_duplicate_that_similarity_search_keeps(
 def test_mmr_at_lambda_one_reproduces_the_similarity_ranking(
     mmr_store: HotdataVectorStore,
 ) -> None:
-    """lambda_mult=1.0 is pure relevance, so the diversity term must drop out entirely."""
+    """lambda_mult=1.0 is pure relevance, so the diversity term must drop out entirely.
+
+    Holds for a cosine store. The selection scores both terms by cosine whatever the
+    store's distance is, so under l2 or dot this reorders the pool rather than
+    reproducing its ranking.
+    """
     found = mmr_store.max_marginal_relevance_search("quiet", k=2, lambda_mult=1.0)
     assert [d.id for d in found] == ["one", "two"]
+
+
+def test_mmr_k_must_be_positive(mmr_store: HotdataVectorStore) -> None:
+    """Without this, fetch_k carries the LIMIT and k<1 returns [] after a wasted query."""
+    client: FakeHotdataClient = mmr_store._client  # type: ignore[assignment]
+    client.queries.clear()
+
+    with pytest.raises(ValueError, match="k must be >= 1"):
+        mmr_store.max_marginal_relevance_search("quiet", k=0)
+    assert client.queries == []
 
 
 def test_mmr_reads_the_vectors_and_bounds_the_candidate_pool(
