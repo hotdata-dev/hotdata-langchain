@@ -245,9 +245,7 @@ distance, then picks `k` from it one at a time, scoring each candidate against b
 and what it has already picked:
 
 ```python
-docs = store.max_marginal_relevance_search(
-    "somewhere bright to stay", k=3, fetch_k=20, lambda_mult=0.5
-)
+docs = store.max_marginal_relevance_search("somewhere bright to stay", k=3, fetch_k=20)
 
 retriever = store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 20})
 ```
@@ -256,16 +254,6 @@ retriever = store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_
 candidate pool, and is raised to `k` if you pass less. `filter=` works the same as it does on
 `similarity_search`. Results come back in selection order — only the first is the nearest to
 the query, and a later pick is often further away than one it was chosen over.
-
-**Expect to tune `lambda_mult` upward.** The default of `0.5` is LangChain's, kept so that
-code ported from another vector store behaves identically — but it weights relevance and
-variety equally, and those two terms rarely have equal spread. With an embedding model that
-packs its distances into a narrow band, the variety term varies far more than the relevance
-term and quietly decides most picks. Running the demo corpus through
-`text-embedding-3-small`, every distance landed between 0.61 and 0.67, and `0.5` promoted a
-listing that did not answer the question at all; `0.7` and `0.8` both dropped a near-duplicate
-for a genuine alternative. One corpus and one model, so treat that as a reason to sweep the
-value on your own data rather than as a recommended number.
 
 This is the one search that reads the stored vectors, which is what MMR needs and what
 forfeits the index lookup — the candidate fetch is a full scan even where an index exists,
@@ -277,6 +265,15 @@ LangChain's own convention, shared by every implementation of this interface: un
 candidate pool is L2-nearest while the selection among those candidates is cosine-based. So
 `lambda_mult=1.0` gives back this store's similarity ranking under `cosine` only — under `l2`
 and `dot` it reorders the candidate pool by cosine instead.
+
+**Expect to tune `lambda_mult` upward.** The `0.5` default is LangChain's, kept so code ported
+from another vector store behaves identically. It weights relevance and variety equally, and
+those two terms rarely have equal spread: an embedding model that packs its distances into a
+narrow band leaves the variety term varying far more than the relevance term, so variety
+quietly decides most picks. On the demo corpus through `text-embedding-3-small` every distance
+fell between 0.60 and 0.67, and `0.5` promoted a listing that did not answer the question at
+all, while `0.7` and `0.8` both dropped a near-duplicate for a genuine alternative. That is one
+corpus and one model — a reason to sweep the value on your own data, not a number to copy.
 
 ### Letting an agent search the store
 
