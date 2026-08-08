@@ -104,6 +104,10 @@ Observed behaviour of the rewrite:
 The fallbacks are silent — a correct answer, computed by full scan, with no warning. So the
 "no" rows are the ones worth guarding in code.
 
+One path takes an embedding-projecting "no" deliberately:
+`HotdataVectorStore.max_marginal_relevance_search` needs the stored vectors to compute
+diversity, so its candidate fetch is a full scan whatever indexes exist, bounded by `fetch_k`.
+
 **How the table is written matters, not just what it resolves to.** The rewrite builds its
 lookup key from the reference as written, so only a full `catalog.schema.table` matches the key
 the index was registered under. A two-part `schema.table` reference resolves to the same rows

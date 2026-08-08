@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from hotdata.api.indexes_api import IndexesApi
@@ -19,6 +20,7 @@ from hotdata_framework.databases import api_error_message
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
+from langchain_core.vectorstores.utils import maximal_marginal_relevance
 
 from hotdata_langchain._sql import quote_literal, validate_identifier
 from hotdata_langchain.databases import resolve_database_by_id
@@ -102,9 +104,11 @@ class HotdataVectorStore(VectorStore):
     against a live engine, which reports a ``USearchExec`` node in the query plan. A
     ``WHERE`` filter is pushed into that lookup rather than costing the fast path.
 
-    Three things forfeit the rewrite, all of which this class avoids: projecting the raw
-    ``embedding`` column, querying with a distance function the index was not built for,
-    and omitting ``LIMIT``.
+    Three things forfeit the rewrite: projecting the raw ``embedding`` column, querying
+    with a distance function the index was not built for, and omitting ``LIMIT``. The
+    searches above avoid all three. ``max_marginal_relevance_search`` is the one exception
+    — it has to read the stored vectors, so its candidate fetch is always a full scan,
+    bounded by ``fetch_k``.
 
     ``create_index`` builds that index for this store's ``distance``, and
     ``from_texts(..., create_index=True)`` does it straight after the first write. Neither
@@ -369,14 +373,24 @@ class HotdataVectorStore(VectorStore):
         embedding: Sequence[float],
         k: int,
         filter: Mapping[str, Any] | None,
+        *,
+        with_vectors: bool = False,
     ) -> str:
+        """Build the ranking query.
+
+        ``with_vectors`` adds the ``embedding`` column to the projection, which MMR needs
+        and which forfeits the engine's index rewrite. Only that path sets it.
+        """
         if k < 1:
             raise ValueError(f"k must be >= 1, got {k}")
         if len(embedding) == 0:
             raise ValueError("query embedding must not be empty")
         vector = "ARRAY[" + ", ".join(repr(float(value)) for value in embedding) + "]"
+        projection = [ID_COLUMN, CONTENT_COLUMN, METADATA_COLUMN]
+        if with_vectors:
+            projection.append(EMBEDDING_COLUMN)
         return (
-            f"SELECT {ID_COLUMN}, {CONTENT_COLUMN}, {METADATA_COLUMN}, "
+            f"SELECT {', '.join(projection)}, "
             f"{DISTANCE_FUNCTIONS[self._distance]}({EMBEDDING_COLUMN}, {vector}) "
             f"AS {DISTANCE_ALIAS} "
             f"FROM {self.table_ref}"
@@ -446,6 +460,71 @@ class HotdataVectorStore(VectorStore):
     ) -> list[Document]:
         scored = self.similarity_search_with_score(query, k, filter=filter, **kwargs)
         return [document for document, _ in scored]
+
+    def max_marginal_relevance_search_by_vector(
+        self,
+        embedding: list[float],
+        k: int = 4,
+        fetch_k: int = 20,
+        lambda_mult: float = 0.5,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> list[Document]:
+        """Return ``k`` documents chosen for relevance *and* variety, in selection order.
+
+        The ``k`` nearest rows are often near-duplicates of each other, which spends every
+        slot on one fact. This ranks ``fetch_k`` candidates by distance as usual, then
+        selects ``k`` of them one at a time, each scored against both the query and what
+        is already selected. ``lambda_mult`` sets the balance: ``1.0`` is pure relevance,
+        ``0.0`` is pure variety.
+
+        Only the first document returned is the nearest to the query. The rest come back
+        in the order they were selected, which is not distance order — a later pick is
+        frequently further away than one it was chosen over.
+
+        ``fetch_k`` below ``k`` is raised to ``k``, so this always returns as many
+        documents as the store holds up to ``k``.
+
+        Unlike ``similarity_search``, this reads the stored vectors, which is what
+        forfeits the engine's index lookup — the candidate fetch is a full scan even
+        where an index exists. ``fetch_k`` bounds it.
+
+        Both terms are scored by cosine similarity whatever this store's ``distance`` is,
+        which is LangChain's own convention: under ``"l2"`` the candidate pool is
+        L2-nearest while the selection among those candidates is cosine-based. So
+        ``lambda_mult=1.0`` reproduces this store's similarity ranking under ``"cosine"``
+        only; under ``"l2"`` and ``"dot"`` it reorders the pool by cosine instead.
+        """
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        rows = self._rows(self._search_sql(embedding, max(fetch_k, k), filter, with_vectors=True))
+        selected = maximal_marginal_relevance(
+            np.array(embedding, dtype=np.float32),
+            [[float(value) for value in row[EMBEDDING_COLUMN]] for row in rows],
+            k=k,
+            lambda_mult=lambda_mult,
+        )
+        return [self._document(rows[index]) for index in selected]
+
+    def max_marginal_relevance_search(
+        self,
+        query: str,
+        k: int = 4,
+        fetch_k: int = 20,
+        lambda_mult: float = 0.5,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> list[Document]:
+        return self.max_marginal_relevance_search_by_vector(
+            self._embedding.embed_query(query),
+            k,
+            fetch_k,
+            lambda_mult,
+            filter=filter,
+            **kwargs,
+        )
 
     def get_by_ids(self, ids: Sequence[str], /) -> list[Document]:
         """Return the rows with these ids, skipping any that are absent."""

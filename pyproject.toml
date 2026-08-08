@@ -13,6 +13,7 @@ dependencies = [
   "hotdata-framework>=0.10.0",
   "hotdata>=0.8.0",
   "langchain-core>=1.0",
+  "numpy>=1.26",
   "pyarrow>=15",
 ]
 

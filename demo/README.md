@@ -152,8 +152,11 @@ from documents it retrieved out of Hotdata. The chain itself is stock LangChain 
 `as_retriever()` into a prompt into a model — with no Hotdata-specific code in it, which is
 the whole point of implementing the `VectorStore` interface.
 
-The corpus is eight short listing descriptions written into the script, so the demo needs no
-fixture download and costs a handful of embedding tokens to run.
+The corpus is ten short listing descriptions written into the script, so the demo needs no
+fixture download and costs a handful of embedding tokens to run. It is built so the demo
+question has three genuinely different good answers — a walled garden, a private deck, a
+shared yard — and so that the first of those is written three times over. Similarity search
+spends its whole top-3 on the triplet; that is what gives the MMR step something to show.
 
 ### Run it
 
@@ -172,7 +175,7 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py \
 ```
 
 Safe to re-run: documents carry explicit ids and the table is keyed on `id`, so a second run
-upserts the same eight rows rather than duplicating them.
+upserts the same ten rows rather than duplicating them.
 
 ```bash
 # bind an existing managed database by id
@@ -180,6 +183,9 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --database-i
 
 # retrieve more documents
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --k 5
+
+# sweep the MMR balance (1.0 is pure relevance, 0.0 pure variety; the demo defaults to 0.7)
+uv run --group demo --env-file .env python demo/vectorstore_demo.py --lambda-mult 1.0
 
 # build the vector index, and print the query plan either side of building it
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --create-index
@@ -212,7 +218,7 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
 2. **Vector store** — constructs `HotdataVectorStore` over `public.documents`, promoting
    `neighbourhood`/`beds`/`outdoor` to real typed columns so they can be filtered on. The
    resolved database record from step 1 is passed straight in, so no id is looked up twice.
-3. **Embed and write** — embeds the eight documents and upserts them in one parquet load.
+3. **Embed and write** — embeds the ten documents and upserts them in one parquet load.
 4. **Vector index** *(only with `--create-index`)* — `EXPLAIN`s the store's own search query,
    builds the index with `store.create_index()`, then `EXPLAIN`s it again. The plan goes from a
    full scan to a `USearchExec` lookup with nothing in the code between the two changing, which
@@ -222,10 +228,30 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
    `--create-index` this runs with **no vector index**: the scalar `cosine_distance` UDF
    brute-forces the table, which is correct from row one. See
    [`docs/engine-contract.md`](../docs/engine-contract.md) for the observed plans.
-6. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
+6. **Diversified search (MMR)** — the same query through
+   `max_marginal_relevance_search`, printed next to the nearest-first ids from step 5 so the
+   two rankings can be read against each other. Nearest-first spends its top `k` on the
+   near-identical garden studios; MMR keeps one and gives the other slots to listings that
+   answer the question differently. This is also the one search that reads the stored vectors,
+   so its candidate fetch is a full scan even with `--create-index` — `--fetch-k` is what
+   bounds it.
+
+   **Why `--lambda-mult` defaults to 0.7 here and not the library's 0.5.** Measured on this
+   corpus with `text-embedding-3-small` on 2026-08-08, every cosine distance fell between
+   0.6055 and 0.6690. So the relevance term spans about 0.06 across the whole corpus, while
+   the redundancy term — near-duplicates score around 0.9 against each other, unrelated
+   documents far lower — spans several times that. Weighted equally at 0.5, variety decides
+   almost every pick: the run promoted `soma-studio`, which has no outdoor space at all. At
+   0.7 and 0.8, identically, it dropped the duplicate `noe-garden` and promoted `sunset-surf`
+   instead. At 1.0 it reproduced step 5 exactly, which is the control worth re-running after
+   any change to the read path.
+
+   This is one corpus, one query and one embedding model, so it is a reason to sweep
+   `lambda_mult` on your own data — not a number to copy.
+7. **Filtered search** — the same query with `outdoor=True, beds=1`. The predicate goes into
    the ranking query's `WHERE`, not around its result, so the filter still returns the top `k`
    *matching* rows rather than whatever survives filtering an already-chosen top `k`.
-7. **Retrieval chain** — `store.as_retriever()` composed into a prompt and a model with LCEL.
+8. **Retrieval chain** — `store.as_retriever()` composed into a prompt and a model with LCEL.
    Nothing in this step knows it is talking to Hotdata.
 
 The script numbers the steps as it runs them, so without `--create-index` step 4 is absent and

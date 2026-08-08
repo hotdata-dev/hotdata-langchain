@@ -81,7 +81,7 @@ tie-breaking) are settled empirically.
       filtering over promoted typed columns. Validated against LangChain's published
       conformance suite (`langchain-tests`) as well as this package's own tests, and verified
       end to end against a live workspace. Design: [`vectorstore-plan.md`](./vectorstore-plan.md).
-      Self-provisioned indexes followed (below); MMR is the one phase still open under
+      Self-provisioned indexes and MMR followed (below), closing every phase under
       [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47).
 - [x] **Vector fast path verified (2026-08-06).** The read path's central assumption — that a
       plain `ORDER BY <distance_fn>(...) LIMIT k` is rewritten into an index lookup — is now
@@ -98,6 +98,11 @@ tie-breaking) are settled empirically.
       for the store's own `distance` — the server would otherwise default to `l2`, and a metric
       the query's distance function was not built for full-scans silently. This is what makes
       the verified fast path reachable without leaving Python for the CLI.
+- [x] **MMR search (Phase 2 of [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47)).**
+      `max_marginal_relevance_search()` and its `_by_vector` variant, so
+      `as_retriever(search_type="mmr")` works instead of raising. It is the one read path that
+      projects the stored vectors, so its candidate fetch forfeits the index lookup and is
+      bounded by `fetch_k` instead.
 
 ### Tier 2 — needs scoped backend work, not exploratory
 

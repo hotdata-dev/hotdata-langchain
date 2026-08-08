@@ -58,11 +58,31 @@ CORPUS = [
         ),
         metadata={"neighbourhood": "Mission", "beds": 2, "outdoor": False},
     ),
+    # Two close paraphrases of mission-garden, so the corpus carries genuine
+    # near-duplicates. Together with sunset-cottage (private deck) and haight-flat
+    # (shared yard) the question has three distinct good answers, one of which is
+    # written three times — similarity search spends its whole top-k on that one.
+    Document(
+        id="noe-garden",
+        page_content=(
+            "A quiet studio in Noe Valley opening onto a private walled garden with a "
+            "lemon tree and a small outdoor table. Set well back from the street."
+        ),
+        metadata={"neighbourhood": "Noe Valley", "beds": 1, "outdoor": True},
+    ),
+    Document(
+        id="bernal-garden",
+        page_content=(
+            "Quiet garden studio below Bernal Hill. Walled patio with a fig tree and an "
+            "outdoor table, and no traffic noise to speak of."
+        ),
+        metadata={"neighbourhood": "Bernal Heights", "beds": 1, "outdoor": True},
+    ),
     Document(
         id="sunset-cottage",
         page_content=(
-            "A foggy-morning cottage three blocks from Ocean Beach. Wood stove, thick "
-            "curtains, and a back deck for when the sun finally comes through."
+            "A hushed foggy-morning cottage three blocks from Ocean Beach, with nothing "
+            "to hear but the surf. Wood stove, thick curtains, and a private back deck."
         ),
         metadata={"neighbourhood": "Outer Sunset", "beds": 2, "outdoor": True},
     ),
@@ -93,8 +113,8 @@ CORPUS = [
     Document(
         id="haight-flat",
         page_content=(
-            "Victorian flat in the Upper Haight with original mouldings, a piano, and a "
-            "shared yard full of nasturtiums."
+            "Peaceful Victorian flat in the Upper Haight with original mouldings, a "
+            "piano, and a big shared yard full of nasturtiums. The street is calm."
         ),
         metadata={"neighbourhood": "Haight", "beds": 3, "outdoor": True},
     ),
@@ -166,6 +186,12 @@ def print_hits(scored: list[tuple[Document, float]]) -> None:
         print(f"     {document.page_content[:100]}…")
 
 
+def print_documents(documents: list[Document]) -> None:
+    for rank, document in enumerate(documents, start=1):
+        print(f"  {rank}. {document.id}  {document.metadata}")
+        print(f"     {document.page_content[:100]}…")
+
+
 def search_plan(client: hl.HotdataClient, store: hl.HotdataVectorStore, *, k: int) -> str:
     """Return the physical plan for the search this store emits.
 
@@ -221,6 +247,17 @@ def run_chain(store: hl.HotdataVectorStore, *, model: str, k: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--k", type=int, default=3, help="how many documents to retrieve")
+    parser.add_argument("--fetch-k", type=int, default=20, help="candidate pool MMR selects k from")
+    parser.add_argument(
+        "--lambda-mult",
+        type=float,
+        # Above the library's 0.5 default. These embeddings pack every distance into
+        # 0.60 to 0.67, so the relevance term spans ~0.06 while the redundancy term spans
+        # ~0.5, and an equal weighting lets variety decide almost every pick. Observed
+        # here at 0.5: a listing with no outdoor space at all.
+        default=0.7,
+        help="MMR relevance/variety balance: 1.0 is pure relevance, 0.0 pure variety",
+    )
     parser.add_argument(
         "--table",
         default=TABLE,
@@ -300,7 +337,20 @@ def main() -> None:
 
         step("Similarity search")
         print(f"Query: {QUESTION!r}")
-        print_hits(store.similarity_search_with_score(QUESTION, k=args.k))
+        nearest = store.similarity_search_with_score(QUESTION, k=args.k)
+        print_hits(nearest)
+
+        step("The same search, diversified with MMR")
+        print(
+            f"MMR ranks {args.fetch_k} candidates, then picks {args.k} scored against the "
+            "query and against each other"
+        )
+        diverse = store.max_marginal_relevance_search(
+            QUESTION, k=args.k, fetch_k=args.fetch_k, lambda_mult=args.lambda_mult
+        )
+        print(f"  nearest: {[document.id for document, _ in nearest]}")
+        print(f"  MMR    : {[document.id for document in diverse]}")
+        print_documents(diverse)
 
         step("The same search, filtered")
         print("Filter: outdoor=True, beds=1 — a predicate inside the ranking query")

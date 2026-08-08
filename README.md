@@ -209,7 +209,8 @@ is confirmed against a live engine: the query plan switches to a `USearchExec` n
 
 Three things forfeit the rewrite and fall back to a full scan, silently and without error:
 projecting the raw `embedding` column, querying with a distance function the index was not
-built for, and omitting `LIMIT`. This class does none of them.
+built for, and omitting `LIMIT`. Similarity search does none of them; MMR
+[does the first](#diverse-results-with-mmr), by necessity.
 
 The store builds that index for you:
 
@@ -235,6 +236,44 @@ the build is accepted and check the job yourself.
 score is exact, whereas the engine's `l2_distance` is *squared* L2 and LangChain's Euclidean
 relevance score expects true Euclidean distance, so `similarity_search_with_relevance_scores`
 under `l2` returns scores on the wrong scale. Ranking is correct under all three.
+
+### Diverse results with MMR
+
+The `k` nearest documents are often near-duplicates of each other — all genuinely close to
+the query, all making the same point. Maximal marginal relevance ranks a wider pool by
+distance, then picks `k` from it one at a time, scoring each candidate against both the query
+and what it has already picked:
+
+```python
+docs = store.max_marginal_relevance_search("somewhere bright to stay", k=3, fetch_k=20)
+
+retriever = store.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 20})
+```
+
+`lambda_mult` is the balance: `1.0` is pure relevance, `0.0` is pure variety. `fetch_k` is the
+candidate pool, and is raised to `k` if you pass less. `filter=` works the same as it does on
+`similarity_search`. Results come back in selection order — only the first is the nearest to
+the query, and a later pick is often further away than one it was chosen over.
+
+This is the one search that reads the stored vectors, which is what MMR needs and what
+forfeits the index lookup — the candidate fetch is a full scan even where an index exists,
+bounded by `fetch_k`. Use it where variety in the retrieved set matters more than the cost of
+scanning; `similarity_search` stays the fast path.
+
+Both halves of that score use cosine similarity whatever `distance=` is set to. That is
+LangChain's own convention, shared by every implementation of this interface: under `l2` the
+candidate pool is L2-nearest while the selection among those candidates is cosine-based. So
+`lambda_mult=1.0` gives back this store's similarity ranking under `cosine` only — under `l2`
+and `dot` it reorders the candidate pool by cosine instead.
+
+**Expect to tune `lambda_mult` upward.** The `0.5` default is LangChain's, kept so code ported
+from another vector store behaves identically. It weights relevance and variety equally, and
+those two terms rarely have equal spread: an embedding model that packs its distances into a
+narrow band leaves the variety term varying far more than the relevance term, so variety
+quietly decides most picks. On the demo corpus through `text-embedding-3-small` every distance
+fell between 0.60 and 0.67, and `0.5` promoted a listing that did not answer the question at
+all, while `0.7` and `0.8` both dropped a near-duplicate for a genuine alternative. That is one
+corpus and one model — a reason to sweep the value on your own data, not a number to copy.
 
 ### Letting an agent search the store
 
