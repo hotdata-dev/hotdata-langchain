@@ -7,6 +7,7 @@ is where a Hotdata-specific implementation can be wrong while still conforming.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,7 +16,7 @@ import pyarrow as pa
 import pytest
 from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase, ManagedTable
-from langchain_core.embeddings import DeterministicFakeEmbedding
+from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
 from langchain_core.vectorstores import VectorStore
 
 from hotdata_langchain.vectorstore import HotdataVectorStore
@@ -23,6 +24,29 @@ from tests.conftest import vector_index
 from tests.fake_hotdata import FakeHotdataClient
 
 EMBEDDING_SIZE = 6
+
+#: Two documents that are near-duplicates of each other and of the query, plus one that is
+#: orthogonal to both. Similarity search returns the pair; MMR should drop one for the
+#: outlier.
+MMR_VECTORS = {
+    "quiet": [1.0, 0.0, 0.0],
+    "near-one": [1.0, 0.0, 0.2],
+    "near-two": [1.0, 0.0, 0.25],
+    "far": [0.0, 1.0, 0.0],
+}
+
+
+class StubEmbeddings(Embeddings):
+    """Embeddings pinned per text, so documents sit at known positions."""
+
+    def __init__(self, vectors: Mapping[str, list[float]]) -> None:
+        self._vectors = dict(vectors)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._vectors[text] for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vectors[text]
 
 
 @pytest.fixture
@@ -430,6 +454,91 @@ def test_filtering_an_int_column_by_a_bool_is_rejected(store: HotdataVectorStore
 def test_filter_operators_are_rejected_explicitly(store: HotdataVectorStore) -> None:
     with pytest.raises(ValueError, match="filter operators are not supported yet"):
         store.similarity_search("a", filter={"beds": {"$gte": 2}})
+
+
+# ------------------------------------------------------- maximal marginal relevance
+
+
+@pytest.fixture
+def mmr_store(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+) -> HotdataVectorStore:
+    store = HotdataVectorStore(
+        fake_client,  # type: ignore[arg-type]
+        StubEmbeddings(MMR_VECTORS),
+        database_id=managed_db.id,
+        metadata_columns={"city": "string"},
+    )
+    store.add_texts(
+        ["near-one", "near-two", "far"],
+        [{"city": "sf"}, {"city": "sf"}, {"city": "nyc"}],
+        ids=["one", "two", "far"],
+    )
+    return store
+
+
+def test_mmr_drops_a_near_duplicate_that_similarity_search_keeps(
+    mmr_store: HotdataVectorStore,
+) -> None:
+    assert [d.id for d in mmr_store.similarity_search("quiet", k=2)] == ["one", "two"]
+    assert [d.id for d in mmr_store.max_marginal_relevance_search("quiet", k=2)] == ["one", "far"]
+
+
+def test_mmr_at_lambda_one_reproduces_the_similarity_ranking(
+    mmr_store: HotdataVectorStore,
+) -> None:
+    """lambda_mult=1.0 is pure relevance, so the diversity term must drop out entirely."""
+    found = mmr_store.max_marginal_relevance_search("quiet", k=2, lambda_mult=1.0)
+    assert [d.id for d in found] == ["one", "two"]
+
+
+def test_mmr_reads_the_vectors_and_bounds_the_candidate_pool(
+    mmr_store: HotdataVectorStore,
+) -> None:
+    """Selecting the embedding column forfeits the index rewrite; fetch_k is what bounds it."""
+    mmr_store.max_marginal_relevance_search("quiet", k=2, fetch_k=5)
+    client: FakeHotdataClient = mmr_store._client  # type: ignore[assignment]
+    sql = client.queries[-1]
+
+    assert sql.startswith("SELECT id, content, metadata_json, embedding, cosine_distance(")
+    assert sql.endswith("LIMIT 5")
+
+
+def test_mmr_fetch_k_below_k_still_returns_k(mmr_store: HotdataVectorStore) -> None:
+    """Fetching fewer candidates than were asked for would silently return short."""
+    assert len(mmr_store.max_marginal_relevance_search("quiet", k=3, fetch_k=1)) == 3
+
+
+def test_mmr_filters_the_candidate_pool(mmr_store: HotdataVectorStore) -> None:
+    found = mmr_store.max_marginal_relevance_search("quiet", k=2, filter={"city": "nyc"})
+    assert [d.id for d in found] == ["far"]
+
+
+def test_mmr_on_an_empty_store_returns_nothing(
+    fake_client: FakeHotdataClient,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+) -> None:
+    store = HotdataVectorStore(
+        fake_client,  # type: ignore[arg-type]
+        StubEmbeddings(MMR_VECTORS),
+        database_id=managed_db.id,
+    )
+    assert store.max_marginal_relevance_search("quiet") == []
+
+
+async def test_async_mmr_comes_free_from_the_base_class(mmr_store: HotdataVectorStore) -> None:
+    """The base class hands `k`/`fetch_k`/`lambda_mult` across as keywords, not positionally."""
+    found = await mmr_store.amax_marginal_relevance_search("quiet", k=2)
+    assert [d.id for d in found] == ["one", "far"]
+
+
+def test_as_retriever_supports_mmr_off_the_base_class(mmr_store: HotdataVectorStore) -> None:
+    """The payoff: search_type='mmr' raised NotImplementedError until these methods existed."""
+    retriever = mmr_store.as_retriever(search_type="mmr", search_kwargs={"k": 2})
+    assert [d.id for d in retriever.invoke("quiet")] == ["one", "far"]
 
 
 # -------------------------------------------------------------------- from_texts

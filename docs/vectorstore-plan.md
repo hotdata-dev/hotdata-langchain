@@ -126,11 +126,15 @@ Everything else has a default or raises `NotImplementedError` until overridden.
   their raw embedding vectors* and runs
   `langchain_core.vectorstores.utils.maximal_marginal_relevance`. This needs its own query
   branch that *does* select the `embedding` column, which breaks the "never surface the vector
-  column" rule the primary read path relies on for the engine's fast-path rewrite (engine issue
-  #508) — so this branch is always brute-force by design. Acceptable: `fetch_k` defaults small
-  and is caller-bounded, so a full scan over a bounded candidate set is cheap. Own phase, own
-  PR — a distinct correctness surface (raw-vector round-trip on read, which the primary path
-  never needs), not bundled with the MVP.
+  column" rule the primary read path relies on for the engine's fast-path rewrite (since
+  observed directly; see `engine-contract.md`) — so this branch is always brute-force by
+  design. Acceptable: `fetch_k` defaults small and is caller-bounded, so a full scan over a
+  bounded candidate set is cheap. Own phase, own PR — a distinct correctness surface
+  (raw-vector round-trip on read, which the primary path never needs), not bundled with the
+  MVP. Two further points settled while building it: `maximal_marginal_relevance` needs the
+  query vector as a numpy array, so `numpy` becomes a declared dependency; and it scores
+  diversity by cosine similarity whatever the store's `distance` is, which every LangChain
+  implementation does and which is documented rather than corrected.
 - Everything else (`add_documents`, async variants via thread-pool wrapping, `as_retriever()`,
   `similarity_search_with_relevance_scores`) is free from the base class — verified by tests
   that they delegate correctly, no new code required.
@@ -265,6 +269,25 @@ match the table a store is opened against — pointing a differently-configured 
 existing table fails on the first write rather than silently writing partial rows. Documented
 in the class docstring and README.
 
+**MMR verified live 2026-08-08** against the same workspace, table `public.documents_mmr`,
+`text-embedding-3-small` at 1536 dimensions over a 10-document corpus. `lambda_mult=1.0`
+reproduced the similarity ranking document-for-document, which is the implementation's own
+control and something the unit tests can only assert on synthetic vectors.
+
+One property surfaced that the plan had not anticipated, and it is about the *embedding
+model*, not the engine. Every cosine distance in the corpus fell between 0.6055 and 0.6690,
+so MMR's relevance term spans ~0.06 while its redundancy term spans several times that —
+near-duplicates score ~0.9 against each other. The two terms therefore do not have
+comparable scale, and LangChain's `lambda_mult=0.5` default, which weights them equally, let
+variety decide nearly every pick: it promoted a document that did not answer the query at
+all. At 0.7 and 0.8 the behaviour was correct and identical — the near-duplicate dropped, a
+genuine alternative promoted.
+
+The library keeps `0.5` (ecosystem compatibility outweighs one corpus's evidence); the demo
+defaults to `0.7` and both READMEs say to sweep it. Single corpus, single query, single
+model — an observation to act on, not a law. The NanoBEIR-style eval harness is what would
+turn it into a measurement.
+
 **Fast path verified 2026-08-06.** Both outstanding `EXPLAIN` questions are settled, and the
 observed plans are recorded in `engine-contract.md`. The primary query plans as a full scan
 with no index and as `USearchExec` once a matching-metric index exists. A `WHERE`-filtered
@@ -273,9 +296,10 @@ query **also** reaches the fast path, with the predicate pushed into the index l
 is an accepted cost" caveat under Filtering above.
 
 Confirmed as forfeiting the rewrite, silently: projecting the `embedding` column, a distance
-function the index was not built for, and omitting `LIMIT`. The store avoids all three by
-construction, which is worth a regression test now that the boundary is known rather than
-assumed.
+function the index was not built for, and omitting `LIMIT`. The `similarity_search*` path
+avoids all three by construction, which is worth a regression test now that the boundary is
+known rather than assumed. MMR (Phase 2) takes the first one deliberately — it cannot compute
+diversity without the stored vectors — and pays for it with a `fetch_k`-bounded full scan.
 
 ## Phasing
 
@@ -285,7 +309,11 @@ assumed.
    `examples/langchain_vectorstore.py`, README section, CHANGELOG entry. A complete, correct,
    mergeable `VectorStore` on its own — `as_retriever()`, chains, and evals all work once this
    lands, independent of anything below.
-2. **MMR** — its own PR; isolated correctness surface (the raw-vector read path).
+2. **MMR** — shipped. `max_marginal_relevance_search()` and its `_by_vector` variant, over a
+   `fetch_k`-bounded candidate fetch that projects the stored vectors. The async variants came
+   free from the base class, which delegates them to the sync ones. Projecting the vector
+   column forfeits the index lookup (observed during Phase 3; see `engine-contract.md`), so
+   this branch full-scans by design while `similarity_search` keeps the fast path.
 3. **Self-provisioning** — shipped. `create_index()` and `from_texts(..., create_index=True)`,
    on `hotdata-framework` 0.10.0's `HotdataClient.create_index`. The store always builds for
    its own `distance`: the server defaults an unspecified metric to `l2` while this store
@@ -303,7 +331,7 @@ Each phase is its own issue and its own PR, under the epic
 |---|---|---|
 | Epic: `HotdataVectorStore` | tracking; links this plan and the phases below | [#47](https://github.com/hotdata-dev/hotdata-langchain/issues/47) |
 | Phase 1 — MVP | `add_texts`, the four `similarity_search*`, `get_by_ids`, `delete`, `from_texts`, promoted-column filtering, unit tests, `examples/langchain_vectorstore.py`, README, CHANGELOG | shipped in 0.4.0 ([#48](https://github.com/hotdata-dev/hotdata-langchain/issues/48)) |
-| Phase 2 — MMR | own PR; raw-vector read path | not filed; independent of Phase 3 |
+| Phase 2 — MMR | own PR; raw-vector read path | [#55](https://github.com/hotdata-dev/hotdata-langchain/issues/55) |
 | Phase 3 — self-provisioning | `create_index()`, `from_texts(..., create_index=True)` | shipped |
 
 Phase 1 is a complete, mergeable `VectorStore` on its own: `as_retriever()`, chains and evals

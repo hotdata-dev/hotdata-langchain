@@ -280,6 +280,8 @@ dependencies = [
     { name = "hotdata" },
     { name = "hotdata-framework" },
     { name = "langchain-core" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyarrow" },
 ]
 
@@ -300,6 +302,7 @@ requires-dist = [
     { name = "hotdata", specifier = ">=0.8.0" },
     { name = "hotdata-framework", specifier = ">=0.10.0" },
     { name = "langchain-core", specifier = ">=1.0" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=15" },
 ]
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HotdataVectorStore.max_marginal_relevance_search()` and
+  `max_marginal_relevance_search_by_vector()`, so `as_retriever(search_type="mmr")` works —
+  it raised `NotImplementedError` before, as the `VectorStore` base class leaves both
+  unimplemented. MMR ranks `fetch_k` candidates by distance, then picks `k` scored against
+  both the query and what is already picked, so a top-`k` of near-duplicates becomes a
+  top-`k` that covers more ground. `lambda_mult` sets the balance; `filter=` applies as it
+  does on `similarity_search`.
+
+  This is the one search that reads the stored vectors, which MMR needs and which forfeits
+  the engine's index lookup. Its candidate fetch is a full scan even where an index exists,
+  bounded by `fetch_k`; `similarity_search` is unaffected.
+
+  `lambda_mult` keeps LangChain's `0.5` default so ported code behaves identically, but
+  expect to raise it. Relevance and variety are weighted equally there and rarely have equal
+  spread: verified against `text-embedding-3-small`, whose distances sat in a 0.06-wide band,
+  `0.5` let variety decide nearly every pick while `0.7` behaved as intended. Both READMEs
+  say to sweep it.
+
+- `numpy` is now a declared dependency. It arrived transitively already; the MMR path imports
+  it directly, so it is declared directly.
 
 ## [0.5.0] - 2026-08-07
 
