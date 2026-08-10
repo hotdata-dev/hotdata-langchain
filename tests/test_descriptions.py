@@ -67,6 +67,44 @@ def test_sql_description_frames_like_as_a_filter_not_a_search() -> None:
     assert description.index("hotdata_search_text") < description.index("LIKE")
 
 
+def test_sql_description_names_bm25_search_as_callable_from_sql() -> None:
+    """Verified live: bm25_search is a TVF whose results join and aggregate like a table.
+
+    Without this an agent calls the search tool and pastes the returned ids back as SQL
+    literals, which caps the cohort at the tool's row limit.
+    """
+    description = descriptions(search_table=TABLE, search_column=COLUMN)["hotdata_execute_sql"]
+    assert "bm25_search" in description
+    assert "table-valued function" in description
+
+
+def test_sql_description_names_the_indexed_table_and_column_when_known() -> None:
+    """BM25 has no brute-force fallback, so the model must not guess at the column."""
+    description = descriptions(search_table=TABLE, search_column=COLUMN)["hotdata_execute_sql"]
+    assert f"bm25_search('{TABLE}', '{COLUMN}'" in description
+
+
+def test_sql_description_prefers_the_composed_form_for_aggregates() -> None:
+    description = descriptions(search_table=TABLE, search_column=COLUMN)["hotdata_execute_sql"]
+    assert "aggregates over the matches" in description
+    # The composable route must be stated before the row-returning tool.
+    assert description.index("bm25_search") < description.index("hotdata_search_text")
+
+
+def test_sql_description_never_claims_sql_cannot_rank_text() -> None:
+    """It can, via bm25_search — the old wording was false and steered agents away."""
+    for description in (
+        sql_tool_description(),
+        descriptions(search_table=TABLE, search_column=COLUMN)["hotdata_execute_sql"],
+    ):
+        assert "cannot rank" not in description.lower()
+
+
+def test_sql_description_offers_bm25_search_without_a_search_tool() -> None:
+    description = descriptions()["hotdata_execute_sql"]
+    assert "bm25_search" in description
+
+
 def test_sql_description_omits_the_search_tool_when_none_is_registered() -> None:
     description = descriptions()["hotdata_execute_sql"]
     assert "hotdata_search_text" not in description

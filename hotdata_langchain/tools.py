@@ -32,19 +32,31 @@ from hotdata_langchain.search import (
 def sql_tool_description(
     search_tool_name: str | None = None,
     describe_tool_name: str | None = DEFAULT_DESCRIBE_TOOL_NAME,
+    *,
+    search_table: str | None = None,
+    search_column: str | None = None,
 ) -> str:
     """Return the agent-facing description for the SQL tool.
 
     States the engine's capabilities positively rather than listing what is absent, so
-    the description does not turn into a false claim as the SQL surface grows. The two
-    constraints it does name are the ones that silently produce wrong tool calls: SQL
-    cannot rank text, and an aggregate query that references no column is rejected.
+    the description does not turn into a false claim as the SQL surface grows. The one
+    constraint it names is the one that silently produces wrong tool calls: an aggregate
+    query that references no column is rejected.
 
-    ``search_tool_name`` is named as the place to do text matching only when a search
-    tool is actually registered alongside this one. When it is, `LIKE` is framed as a
-    filter on text you already know rather than a way to find relevant rows: stating
-    only that it "works" was observed to pull the model into `ILIKE '%word%'` instead of
-    searching, which returns unranked results and misses related wording.
+    ``search_tool_name`` is named as a place to do text matching only when a search tool
+    is actually registered alongside this one. `LIKE` is framed as a filter on text you
+    already know rather than a way to find relevant rows: stating only that it "works"
+    was observed to pull the model into `ILIKE '%word%'` instead of searching, which
+    returns unranked results and misses related wording.
+
+    Text ranking is also reachable *inside* SQL: ``bm25_search`` is a table-valued
+    function, so a cohort identified by relevance can be joined and aggregated in one
+    query. An agent given only the tool framing was observed to call search and then
+    paste the returned ids back as SQL literals — correct, but capped by the tool's row
+    limit and quadratic in prompt size. Naming the function, and preferring it whenever
+    the answer aggregates over the matches, is what makes the composed form reachable.
+    ``search_table``/``search_column`` are woven into the text when known, so the model
+    is told which column is actually BM25-indexed rather than guessing one.
 
     Table references are asked for in full. A two-part `schema.table` reference resolves
     and returns correct rows, but the engine's index-lookup rewrite matches on the
@@ -52,16 +64,34 @@ def sql_tool_description(
     to a scan (datafusion-vector-search-ext#32). The wording states the preference rather
     than the current defect, so it stays accurate once that is fixed.
     """
+    if search_table and search_column:
+        bm25_example = (
+            f"Here the BM25-indexed column is '{search_column}' on {search_table}, so "
+            f"the call is bm25_search('{search_table}', '{search_column}', "
+            f"'<query text>', <k>)."
+        )
+    else:
+        bm25_example = (
+            "The call is bm25_search('catalog.schema.table', '<column>', '<query text>', "
+            "<k>), over a column that has a BM25 index."
+        )
+    composable = (
+        f"To rank rows by how well their text matches a phrase, call bm25_search inside "
+        f"SQL: it is a table-valued function returning the matched rows' columns plus a "
+        f"`score`, so it joins, groups and nests in subqueries like any other table. "
+        f"{bm25_example} Prefer this whenever the answer aggregates over the matches "
+        f"rather than listing them — it keeps the whole cohort in the query instead of "
+        f"passing ids back as literals."
+    )
     text_guidance = (
-        f"To find which rows are about something, use the {search_tool_name} tool — it "
-        f"ranks by relevance — and then pass the values it returns into SQL as literals. "
-        f"SQL cannot rank text. LIKE and ILIKE only test for a literal substring you "
-        f"already know, so they are a filter, not a substitute for searching: "
-        f"ILIKE '%word%' returns unranked rows and misses the related wording a search "
-        f"would find."
+        f"{composable} To simply list the most relevant rows, the "
+        f"{search_tool_name} tool does the same ranking and returns them directly. "
+        f"LIKE and ILIKE only test for a literal substring you already know, so they "
+        f"are a filter, not a substitute for searching: ILIKE '%word%' returns "
+        f"unranked rows and misses the related wording a search would find."
         if search_tool_name
-        else "LIKE and ILIKE test for a literal substring, but SQL cannot rank rows by "
-        "how well their text matches a phrase."
+        else f"{composable} LIKE and ILIKE only test for a literal substring, so they "
+        f"are a filter, not a way to rank rows by relevance."
     )
     discovery = (
         f"Do not guess table or column names — get them from the {describe_tool_name} tool"
@@ -194,6 +224,8 @@ def make_hotdata_tools(
             description=sql_tool_description(
                 search_tool_name if has_search else None,
                 DEFAULT_DESCRIBE_TOOL_NAME if describe_tables else None,
+                search_table=search_table if has_search else None,
+                search_column=search_column if has_search else None,
             ),
         ),
         StructuredTool.from_function(
