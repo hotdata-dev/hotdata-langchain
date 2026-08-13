@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The SQL tool no longer tells the model that the catalog is always `default`. That held for
+  managed databases only: an **attached** source's tables answer to the attachment's alias, so
+  an agent scoped to one wrote `default.public.results`, got "table not found", and had no way
+  to recover — every query against an attached database failed. `make_hotdata_tools` now reads
+  the catalogs from `information_schema` once at build time and states the real one in the
+  description; pass `catalog="…"` to skip the lookup. The database record cannot be used for
+  this: `GET /databases/{id}` reports `default_catalog='default'` for both kinds.
+- Corrected the `COUNT(*)` claim, which had been stated as an engine-wide rule since 0.3.0.
+  Re-verified across every table in a live workspace: `COUNT(*)` and `COUNT(1)` **succeed** on
+  most tables, including one of 6,001,215 rows. On the tables that do reject them, plain
+  `SELECT 1 AS k FROM t LIMIT 1` is rejected too — so it is not an aggregate rule, and what
+  distinguishes an affected table is unidentified ([#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)).
+  The description now says some tables reject a projection naming none of their own columns,
+  and that naming a column always works.
+- `hotdata_list_managed_databases` no longer returns an `sql_prefix` of
+  `<database_id>.{schema}.{table}`. Verified: that reference is rejected. The catalog is never
+  the database id.
+
+### Added
+
+- The SQL tool description states the date/time dialect. Functions are DataFusion's, so format
+  patterns are strftime: `to_char(<date>, 'YYYY-MM-DD')` returns the **literal pattern** on
+  every row rather than raising, while `to_date` rejects the same pattern. A deployed agent hit
+  this and answered with days labelled `Day 1, Day 2, Day 3` over correct numbers, with nothing
+  signalling a problem. The description now gives `'%Y-%m-%d'`, notes there is no
+  `date_sub`/`date_add`, and says the bad pattern fails silently.
+- The SQL tool description warns that identifiers are lowercased when stored, so quoting one to
+  preserve case (`r."driverId"`) fails while `r.driverId` resolves.
+- `hotdata_langchain.databases.query_catalogs`, which reads the catalogs holding tables in a
+  database's query scope.
+
+### Changed
+
+- The SQL tool description names the dialect as **Apache DataFusion, which follows
+  PostgreSQL closely**, rather than as "PostgreSQL dialect". Calling it PostgreSQL
+  reinforced the prior behind the one measured silent-wrong-value failure: the model wrote
+  valid PostgreSQL date formatting and got a column of literal format strings back. Naming
+  the engine gives a prior that holds for divergences not yet found — only date/time
+  functions have been probed, so string and numeric formatting remain unverified — where
+  "PostgreSQL plus a list of exceptions" only covers the ones already measured.
+- `sql_tool_description` leads with `bm25_search` as a table-valued function that joins, groups
+  and nests, and prefers it whenever the answer aggregates over the matches. It previously told
+  the model to call the search tool and "pass the values it returns into SQL as literals",
+  asserting that **SQL cannot rank text** — which is false. Measured: an agent asked to compare
+  a relevance-defined cohort against the population pasted 100 literal ids into `WHERE id IN
+  (...)`, capping the cohort at the tool's row limit rather than at intent. The `LIKE`/`ILIKE`
+  framing is kept: saying `LIKE` merely "works" was previously observed to pull models into
+  `ILIKE '%word%'` instead of searching.
+- `sql_tool_description` takes `search_table`/`search_column`, so when the caller knows the
+  indexed corpus the description names it concretely. BM25 has no brute-force fallback, so a
+  guessed column is a hard error rather than a slow scan.
 
 ## [0.6.0] - 2026-08-08
 

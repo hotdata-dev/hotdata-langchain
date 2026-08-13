@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from hotdata.api.databases_api import DatabasesApi
@@ -14,6 +15,10 @@ from hotdata_framework import (
     ManagedDatabase,
 )
 from hotdata_framework.databases import api_error_message, managed_database_from_detail
+
+logger = logging.getLogger(__name__)
+
+CATALOG_QUERY = "SELECT DISTINCT table_catalog FROM information_schema.tables"
 
 
 def resolve_database_by_id(
@@ -63,15 +68,28 @@ def query_scope(database: ManagedDatabase | None) -> ManagedDatabase | None:
     )
 
 
+def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str]:
+    """Return the catalogs that hold tables inside ``database``'s query scope.
+
+    Read from ``information_schema`` rather than from the database record. A database
+    reports ``default_catalog = 'default'`` whether or not anything answers to that name:
+    an attached source's tables answer to the attachment's alias instead, so ``default``
+    resolves nothing there.
+
+    Returns an empty list if the query fails, so a description that names the catalog is
+    never the reason tool construction fails.
+    """
+    try:
+        result = client.execute_sql(CATALOG_QUERY, database=query_scope(database))
+        catalogs = sorted({row[0] for row in result.rows if row and isinstance(row[0], str)})
+    except Exception:
+        logger.debug("could not read table_catalog for database %s", database.id, exc_info=True)
+        return []
+    return catalogs
+
+
 def list_managed_databases_json(client: HotdataClient) -> str:
-    rows = [
-        {
-            "description": db.description,
-            "id": db.id,
-            "sql_prefix": f"{db.id}.{{schema}}.{{table}}",
-        }
-        for db in client.list_managed_databases()
-    ]
+    rows = [{"description": db.description, "id": db.id} for db in client.list_managed_databases()]
     return json.dumps(rows, indent=2)
 
 

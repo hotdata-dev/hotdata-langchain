@@ -117,12 +117,20 @@ Rows come back ranked, each with a `score`. The agent supplies only `query` and 
 the tool surface lets an agent discover which columns are indexed, and the engine errors
 outright rather than falling back to a scan when a column has no BM25 index.
 
-Inside a managed database the built-in catalog is always `default`, so a managed table reads
-as `default.<schema>.<table>` when `database_id=` scopes the query to it. Write all three
-parts: a two-part `schema.table` reference resolves and returns the same rows, but the engine
-matches its index lookup on the reference as written, so the short form can quietly forfeit an
-index. The SQL tool's description tells the model this; `HotdataVectorStore` and the search
-tool emit the full form themselves.
+A managed database's tables read as `default.<schema>.<table>`. An **attached** source's do
+not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not
+found there. Nothing on the database record distinguishes the two, so there is no constant
+the tools can assume.
+
+`make_hotdata_tools` therefore reads the catalog from `information_schema` once, when the
+tools are built, and states it in the SQL tool's description — so the model is told the real
+catalog rather than a rule that holds for only one kind of database. Pass `catalog="…"` to
+skip that lookup.
+
+Write all three parts either way: a two-part `schema.table` reference resolves and returns the
+same rows, but the engine matches its index lookup on the reference as written, so the short
+form can quietly forfeit an index. `HotdataVectorStore` and the search tool emit the full form
+themselves.
 
 For more than one searchable corpus, build the tools yourself and give each a distinct name
 and description — the agent then routes on the descriptions:

@@ -301,8 +301,8 @@ def main() -> None:
         step("2. Listings data")
         already_loaded = False
         if not args.reload:
-            # Probing with a row read rather than COUNT(*): the engine rejects a
-            # projection that is aggregates only.
+            # Probing with a named column rather than COUNT(*): this table rejects a
+            # projection naming none of its own columns.
             try:
                 probe = client.execute_sql(f"SELECT id FROM {TABLE_REF} LIMIT 1", database=db)
                 already_loaded = bool(probe.rows)

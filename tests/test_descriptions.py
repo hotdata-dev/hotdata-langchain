@@ -25,16 +25,47 @@ def test_every_tool_is_described() -> None:
         assert len(description) > 40, f"{name} has a description too thin to plan against"
 
 
-def test_sql_description_states_the_dialect() -> None:
-    assert "postgresql dialect" in sql_tool_description().lower()
+def test_sql_description_names_datafusion_as_the_dialect() -> None:
+    """Calling it PostgreSQL reinforced the prior behind the one silent-wrong-value failure.
+
+    Verified: ``SELECT version()`` reports ``Apache DataFusion 54.0.0``. Naming the engine
+    gives a prior that covers divergences not yet measured; PostgreSQL plus a list of
+    exceptions only covers the ones already found.
+    """
+    description = sql_tool_description()
+    assert "DataFusion" in description
+    assert "PostgreSQL" in description
+    assert "postgresql dialect" not in description.lower()
 
 
-def test_sql_description_warns_that_aggregates_need_a_column() -> None:
-    """Verified live: ungrouped COUNT(*)/COUNT(1) are rejected, COUNT(<column>) works."""
+def test_sql_description_does_not_assert_the_format_echo_as_a_rule() -> None:
+    """The echo is a defect the engine may fix (#37); asserting it would then be false.
+
+    Behaviour being corrected upstream is stated as an absence of a guarantee, so the
+    wording survives the fix.
+    """
+    description = sql_tool_description()
+    assert "does not reliably raise" in description
+    assert "returned verbatim as text on every row" not in description
+
+
+def test_sql_description_prefers_counting_a_named_column() -> None:
+    """Verified live: some tables reject COUNT(*), COUNT(1) and even SELECT 1.
+
+    It is not an aggregate rule and not universal — ``SELECT 1 FROM t LIMIT 1`` fails on
+    the same tables, while COUNT(*) succeeds on most. Naming a column always works.
+    """
     description = sql_tool_description()
     assert "COUNT(*)" in description
     assert "COUNT(<column>)" in description
-    assert "GROUP BY" in description
+    assert "Some tables reject" in description
+
+
+def test_sql_description_does_not_claim_ungrouped_counts_are_always_rejected() -> None:
+    """Verified live: COUNT(*) succeeds on most tables, including a 6M-row one."""
+    description = sql_tool_description().lower()
+    assert "are rejected on their own" not in description
+    assert "must reference at least one column" not in description
 
 
 def test_sql_description_asks_for_fully_qualified_table_references() -> None:
@@ -42,7 +73,56 @@ def test_sql_description_asks_for_fully_qualified_table_references() -> None:
     description = sql_tool_description()
     assert "catalog.schema.table" in description
     assert "all three parts" in description
-    assert "'default'" in description
+
+
+def test_sql_description_names_the_catalog_when_it_is_known() -> None:
+    """The builder resolves the database, so it can state the catalog rather than a rule."""
+    assert "the catalog is 'default'" in sql_tool_description(catalogs=["default"])
+    assert "the catalog is 'f1'" in sql_tool_description(catalogs=["f1"])
+
+
+def test_sql_description_never_claims_the_catalog_is_always_default() -> None:
+    """Verified live: an attached source's tables answer to 'f1', not 'default'.
+
+    The database record reports ``default_catalog = 'default'`` for both kinds, so the old
+    unconditional claim failed every query against an attached database.
+    """
+    for description in (sql_tool_description(), sql_tool_description(catalogs=["f1"])):
+        assert "always 'default'" not in description
+
+
+def test_sql_description_falls_back_to_information_schema_for_the_catalog() -> None:
+    description = sql_tool_description()
+    assert "table_catalog from information_schema.tables" in description
+
+
+def test_sql_description_lists_every_catalog_when_a_database_has_several() -> None:
+    description = sql_tool_description(catalogs=["default", "f1"])
+    assert "default, f1" in description
+    assert "table_catalog from information_schema.tables" in description
+
+
+def test_sql_description_states_the_date_dialect() -> None:
+    """Verified live: to_char with a PostgreSQL pattern returns the pattern, and never raises."""
+    description = sql_tool_description()
+    assert "strftime" in description
+    assert "'%Y-%m-%d'" in description
+    assert "'YYYY-MM-DD'" in description
+    assert "date_sub" in description
+    assert "INTERVAL '6 days'" in description
+
+
+def test_sql_description_warns_that_a_bad_date_pattern_does_not_raise() -> None:
+    """The silence is the whole danger: the run continues on destroyed values."""
+    description = sql_tool_description()
+    assert "never assume a bad pattern will announce itself" in description
+
+
+def test_sql_description_warns_against_quoting_identifiers_for_case() -> None:
+    """Verified live: r."driverId" fails while r.driverId resolves; storage is lowercased."""
+    description = sql_tool_description()
+    assert "lowercased" in description
+    assert '"driverId"' in description
 
 
 def test_sql_description_does_not_call_the_short_table_form_invalid() -> None:
@@ -125,6 +205,18 @@ def test_database_descriptions_steer_towards_ids() -> None:
     assert "id" in described["hotdata_list_managed_databases"]
     assert "not unique" in described["hotdata_list_managed_databases"]
     assert "database id" in described["hotdata_load_managed_table"].lower()
+
+
+def test_catalog_argument_reaches_the_sql_description() -> None:
+    description = descriptions(catalog="f1")["hotdata_execute_sql"]
+    assert "the catalog is 'f1'" in description
+
+
+def test_unscoped_tools_never_probe_for_a_catalog() -> None:
+    """No database means no scope to read information_schema in, so no query is issued."""
+    client = MagicMock()
+    make_hotdata_tools(client)
+    client.execute_sql.assert_not_called()
 
 
 def test_load_description_states_the_accepted_input() -> None:
