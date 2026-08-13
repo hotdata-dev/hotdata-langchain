@@ -67,8 +67,3 @@ jobs:
 
       - name: Publish via Trusted Publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          # The build job already ran `twine check --strict` against a freshly
-          # installed twine. This action's bundled twine lags the metadata versions
-          # hatchling emits, and rejected a valid wheel on v0.7.0.
-          verify-metadata: false
