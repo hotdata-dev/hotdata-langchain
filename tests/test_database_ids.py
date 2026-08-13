@@ -10,13 +10,19 @@ only lookup it makes.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
 from hotdata.exceptions import ApiException
-from hotdata_framework import LoadManagedTableResult, ManagedDatabase
+from hotdata_framework import LoadManagedTableResult, ManagedDatabase, QueryResult
 
-from hotdata_langchain.databases import query_scope, resolve_database_by_id
+from hotdata_langchain.databases import (
+    CATALOG_QUERY,
+    query_catalogs,
+    query_scope,
+    resolve_database_by_id,
+)
 from hotdata_langchain.schema import make_hotdata_describe_tables_tool
 from hotdata_langchain.search import make_hotdata_search_tool
 from hotdata_langchain.tools import execute_sql_json, make_hotdata_tools
@@ -215,3 +221,97 @@ def test_load_description_tells_the_model_where_ids_come_from(mock_client: Magic
     description = load_tool(mock_client).description or ""  # type: ignore[attr-defined]
     assert "hotdata_list_managed_databases" in description
     assert "hotdata_create_managed_database" in description
+
+
+# --- catalog lookup ----------------------------------------------------------------
+#
+# There is no catalog name that holds for both database kinds: a managed database's
+# tables answer to `default`, an attached source's answer to the attachment's alias, and
+# the database record reports `default_catalog='default'` either way. So the SQL tool
+# description names the catalog only because this lookup found it, which makes the
+# lookup part of the model-facing contract rather than an internal detail.
+
+
+def catalog_result(*catalogs: str) -> QueryResult:
+    """A ``QueryResult`` shaped as ``CATALOG_QUERY`` returns one: one column, one row each."""
+    return QueryResult(
+        columns=["table_catalog"],
+        rows=[[c] for c in catalogs],
+        row_count=len(catalogs),
+        result_id="res_catalogs",
+        query_run_id="run_catalogs",
+        execution_time_ms=9,
+        warning=None,
+        error_message=None,
+    )
+
+
+def test_query_catalogs_reads_information_schema_in_the_database_scope(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    mock_client.execute_sql.return_value = catalog_result("default")
+    assert query_catalogs(mock_client, managed_db) == ["default"]
+    sql, kwargs = mock_client.execute_sql.call_args[0][0], mock_client.execute_sql.call_args[1]
+    assert sql == CATALOG_QUERY
+    assert "information_schema.tables" in sql
+    assert kwargs["database"] == managed_db
+
+
+def test_query_catalogs_reports_an_attachment_alias(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Verified live against an attached Postgres source: the catalog is 'f1', not 'default'."""
+    mock_client.execute_sql.return_value = catalog_result("f1")
+    assert query_catalogs(mock_client, managed_db) == ["f1"]
+
+
+def test_query_catalogs_excludes_information_schema_itself(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """A catalog holding nothing else would otherwise mask the one worth naming."""
+    assert "table_schema <> 'information_schema'" in CATALOG_QUERY
+
+
+def test_query_catalogs_dedupes_and_sorts(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    mock_client.execute_sql.return_value = catalog_result("f1", "default", "f1")
+    assert query_catalogs(mock_client, managed_db) == ["default", "f1"]
+
+
+def test_query_catalogs_returns_empty_when_the_query_fails(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Building tools must not fail because the description could not name the catalog."""
+    mock_client.execute_sql.side_effect = RuntimeError("Bad Request")
+    assert query_catalogs(mock_client, managed_db) == []
+
+
+def test_query_catalogs_warns_when_it_degrades(
+    mock_client: MagicMock, managed_db: ManagedDatabase, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Swallowing is right; swallowing silently hides a weaker model-facing contract."""
+    mock_client.execute_sql.side_effect = RuntimeError("Bad Request")
+    with caplog.at_level(logging.WARNING, logger="hotdata_langchain.databases"):
+        query_catalogs(mock_client, managed_db)
+    assert any(managed_db.id in r.getMessage() for r in caplog.records)
+    assert all(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_scoped_tools_name_the_catalog_the_lookup_found(
+    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    """The whole path: resolve the database, read its catalog, state it to the model."""
+    mock_client.execute_sql.return_value = catalog_result("f1")
+    tools = make_hotdata_tools(mock_client, database_id=managed_db.id)
+    description = next(t for t in tools if t.name == "hotdata_execute_sql").description or ""
+    assert "the catalog is 'f1'" in description
+
+
+def test_an_explicit_catalog_skips_the_lookup(
+    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    tools = make_hotdata_tools(mock_client, database_id=managed_db.id, catalog="warehouse")
+    description = next(t for t in tools if t.name == "hotdata_execute_sql").description or ""
+    assert "the catalog is 'warehouse'" in description
+    mock_client.execute_sql.assert_not_called()

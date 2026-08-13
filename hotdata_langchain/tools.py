@@ -15,6 +15,7 @@ from hotdata_langchain.databases import (
     load_managed_table,
     load_result_summary,
     managed_database_summary,
+    query_catalogs,
     query_scope,
     resolve_database_by_id,
 )
@@ -32,36 +33,85 @@ from hotdata_langchain.search import (
 def sql_tool_description(
     search_tool_name: str | None = None,
     describe_tool_name: str | None = DEFAULT_DESCRIBE_TOOL_NAME,
+    *,
+    search_table: str | None = None,
+    search_column: str | None = None,
+    catalogs: Sequence[str] | None = None,
 ) -> str:
     """Return the agent-facing description for the SQL tool.
 
     States the engine's capabilities positively rather than listing what is absent, so
-    the description does not turn into a false claim as the SQL surface grows. The two
-    constraints it does name are the ones that silently produce wrong tool calls: SQL
-    cannot rank text, and an aggregate query that references no column is rejected.
+    the description does not turn into a false claim as the SQL surface grows. The
+    constraints it does name are the ones that silently produce wrong tool calls rather
+    than errors the model can read and retry against.
 
-    ``search_tool_name`` is named as the place to do text matching only when a search
-    tool is actually registered alongside this one. When it is, `LIKE` is framed as a
-    filter on text you already know rather than a way to find relevant rows: stating
-    only that it "works" was observed to pull the model into `ILIKE '%word%'` instead of
-    searching, which returns unranked results and misses related wording.
+    ``search_tool_name`` is named as a place to do text matching only when a search tool
+    is actually registered alongside this one. `LIKE` is framed as a filter on text you
+    already know rather than a way to find relevant rows: stating only that it "works"
+    was observed to pull the model into `ILIKE '%word%'` instead of searching, which
+    returns unranked results and misses related wording.
+
+    Text ranking is also reachable *inside* SQL: ``bm25_search`` is a table-valued
+    function, so a cohort identified by relevance can be joined and aggregated in one
+    query. An agent given only the tool framing was observed to call search and then
+    paste the returned ids back as SQL literals — correct, but capped by the tool's row
+    limit and quadratic in prompt size. Naming the function, and preferring it whenever
+    the answer aggregates over the matches, is what makes the composed form reachable.
+    ``search_table``/``search_column`` are woven into the text when known, so the model
+    is told which column is actually BM25-indexed rather than guessing one.
 
     Table references are asked for in full. A two-part `schema.table` reference resolves
     and returns correct rows, but the engine's index-lookup rewrite matches on the
     reference as written, so the short form can silently forfeit an index and fall back
     to a scan (datafusion-vector-search-ext#32). The wording states the preference rather
     than the current defect, so it stays accurate once that is fixed.
+
+    ``catalogs`` names the catalogs the tools are scoped to, so the description can state
+    the catalog outright. There is no universal answer to state instead: a managed
+    database answers to `default`, an attached source answers to its attachment alias,
+    and the database record reports `default` either way. With none supplied the model is
+    pointed at `information_schema` rather than given a rule that holds for one of the two
+    kinds.
+
+    The dialect is named as DataFusion rather than PostgreSQL. Calling it PostgreSQL
+    reinforced the prior that produced the one measured silent-wrong-value failure: the
+    model wrote valid PostgreSQL date formatting and got a column of literal format
+    strings back. Naming the engine gives a prior that holds for divergences not yet
+    found, where a list of exceptions only covers the ones already measured.
+
+    The date/time wording says a PostgreSQL pattern does not reliably raise, rather than
+    that it echoes. Echoing is a current defect that the engine may fix, so asserting it
+    would put a false claim in the model's contract the day it is fixed. Behaviour that is
+    being corrected upstream is stated as an absence of a guarantee, never as a rule.
     """
+    if search_table and search_column:
+        bm25_example = (
+            f"Here the BM25-indexed column is '{search_column}' on {search_table}, so "
+            f"the call is bm25_search('{search_table}', '{search_column}', "
+            f"'<query text>', <k>)."
+        )
+    else:
+        bm25_example = (
+            "The call is bm25_search('catalog.schema.table', '<column>', '<query text>', "
+            "<k>), over a column that has a BM25 index."
+        )
+    composable = (
+        f"To rank rows by how well their text matches a phrase, call bm25_search inside "
+        f"SQL: it is a table-valued function returning the matched rows' columns plus a "
+        f"`score`, so it joins, groups and nests in subqueries like any other table. "
+        f"{bm25_example} Prefer this whenever the answer aggregates over the matches "
+        f"rather than listing them — it keeps the whole cohort in the query instead of "
+        f"passing ids back as literals."
+    )
     text_guidance = (
-        f"To find which rows are about something, use the {search_tool_name} tool — it "
-        f"ranks by relevance — and then pass the values it returns into SQL as literals. "
-        f"SQL cannot rank text. LIKE and ILIKE only test for a literal substring you "
-        f"already know, so they are a filter, not a substitute for searching: "
-        f"ILIKE '%word%' returns unranked rows and misses the related wording a search "
-        f"would find."
+        f"{composable} To simply list the most relevant rows, the "
+        f"{search_tool_name} tool does the same ranking and returns them directly. "
+        f"LIKE and ILIKE only test for a literal substring you already know, so they "
+        f"are a filter, not a substitute for searching: ILIKE '%word%' returns "
+        f"unranked rows and misses the related wording a search would find."
         if search_tool_name
-        else "LIKE and ILIKE test for a literal substring, but SQL cannot rank rows by "
-        "how well their text matches a phrase."
+        else f"{composable} LIKE and ILIKE only test for a literal substring, so they "
+        f"are a filter, not a way to rank rows by relevance."
     )
     discovery = (
         f"Do not guess table or column names — get them from the {describe_tool_name} tool"
@@ -69,17 +119,42 @@ def sql_tool_description(
         else "Do not guess table or column names — read them from "
         "information_schema.tables and information_schema.columns, or DESCRIBE <table>"
     )
+    known = list(catalogs or ())
+    if len(known) == 1:
+        catalog_rule = f"Here the catalog is '{known[0]}'."
+    elif known:
+        catalog_rule = (
+            f"This database exposes more than one catalog ({', '.join(known)}) — read "
+            f"table_catalog from information_schema.tables to see which one holds a table."
+        )
+    else:
+        catalog_rule = (
+            "Read table_catalog from information_schema.tables rather than assuming a "
+            "catalog name: a managed database answers to 'default', an attached source "
+            "answers to its own name."
+        )
     return (
-        "Run a read-only SQL query and return the rows as JSON. PostgreSQL dialect: "
-        "joins, CTEs, subqueries, GROUP BY, window functions, ORDER BY/LIMIT and the "
-        "usual scalar functions all work.\n"
+        "Run a read-only SQL query and return the rows as JSON. The engine is Apache "
+        "DataFusion, whose SQL follows PostgreSQL closely: joins, CTEs, subqueries, "
+        "GROUP BY, window functions, ORDER BY/LIMIT and the usual scalar functions all "
+        "work. Where the two differ, DataFusion is what runs, so prefer a DataFusion "
+        "function over a PostgreSQL-only one when you are unsure.\n"
         f"{text_guidance}\n"
-        "An aggregate query must reference at least one column: COUNT(*) and COUNT(1) "
-        "are rejected on their own, so write COUNT(<column>) or add a GROUP BY.\n"
-        "Address tables with all three parts: catalog.schema.table. Inside a managed "
-        "database the catalog is always 'default'. A two-part schema.table reference "
-        "resolves to the same rows but is not always index-accelerated, so write the "
-        "full form. "
+        "Date and time handling is one place they differ: format patterns are strftime, "
+        "so write to_char(<date>, '%Y-%m-%d'). A PostgreSQL pattern like 'YYYY-MM-DD' is "
+        "wrong here and does not reliably raise — it can come back as the literal text on "
+        "every row — so never assume a bad pattern will announce itself. There is no "
+        "date_sub or date_add: subtract an interval, as in <date> - INTERVAL '6 days'. "
+        "date_trunc, now() and current_date work.\n"
+        "Some tables reject a projection naming none of their own columns: COUNT(*), "
+        "COUNT(1) and SELECT 1 can fail with 'must either specify a row count or at "
+        "least one column'. Naming a column always works, so prefer COUNT(<column>).\n"
+        "Identifiers are lowercased when stored, so a name that looks camelCase is "
+        "already lowercase and quoting it to preserve case fails: write driverId or "
+        'driverid, never "driverId".\n'
+        f"Address tables with all three parts: catalog.schema.table. {catalog_rule} A "
+        "two-part schema.table reference resolves to the same rows but is not always "
+        "index-accelerated, so write the full form. "
         f"{discovery}."
     )
 
@@ -119,6 +194,7 @@ def make_hotdata_tools(
     search_k: int = DEFAULT_SEARCH_LIMIT,
     search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
     describe_tables: bool = True,
+    catalog: str | None = None,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and managed database workflows.
 
@@ -141,11 +217,23 @@ def make_hotdata_tools(
     For more than one searchable corpus, call
     :func:`hotdata_langchain.search.make_hotdata_search_tool` directly per corpus and
     extend this list.
+
+    ``catalog`` is the catalog name the SQL tool tells the model to address tables with.
+    When it is omitted and the tools are scoped to a database, the catalogs are read from
+    that database's ``information_schema`` once, here — a managed database answers to
+    ``default`` and an attached source answers to its attachment alias, so there is no
+    correct constant to fall back on. Pass it to skip that lookup.
     """
     if (search_table is None) != (search_column is None):
         raise ValueError("search_table and search_column must be provided together")
 
     database = resolve_database_by_id(client, database_id) if database_id is not None else None
+    if catalog is not None:
+        catalogs = [catalog]
+    elif database is not None:
+        catalogs = query_catalogs(client, database)
+    else:
+        catalogs = []
 
     def hotdata_execute_sql(sql: str) -> str:
         """Run SQL against the Hotdata workspace and return JSON rows."""
@@ -194,6 +282,9 @@ def make_hotdata_tools(
             description=sql_tool_description(
                 search_tool_name if has_search else None,
                 DEFAULT_DESCRIBE_TOOL_NAME if describe_tables else None,
+                search_table=search_table if has_search else None,
+                search_column=search_column if has_search else None,
+                catalogs=catalogs,
             ),
         ),
         StructuredTool.from_function(

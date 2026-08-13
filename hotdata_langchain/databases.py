@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from hotdata.api.databases_api import DatabasesApi
@@ -14,6 +15,13 @@ from hotdata_framework import (
     ManagedDatabase,
 )
 from hotdata_framework.databases import api_error_message, managed_database_from_detail
+
+logger = logging.getLogger(__name__)
+
+CATALOG_QUERY = (
+    "SELECT DISTINCT table_catalog FROM information_schema.tables "
+    "WHERE table_schema <> 'information_schema'"
+)
 
 
 def resolve_database_by_id(
@@ -63,15 +71,40 @@ def query_scope(database: ManagedDatabase | None) -> ManagedDatabase | None:
     )
 
 
+def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str]:
+    """Return the catalogs that hold tables inside ``database``'s query scope.
+
+    Read from ``information_schema`` rather than from the database record. A database
+    reports ``default_catalog = 'default'`` whether or not anything answers to that name:
+    an attached source's tables answer to the attachment's alias instead, so ``default``
+    resolves nothing there.
+
+    Catalogs holding nothing but their own ``information_schema`` are excluded, so a
+    scope exposing one empty catalog alongside an attachment still names the attachment.
+    The engine has not been observed listing ``information_schema`` in its own output, so
+    that filter matches no rows today.
+
+    Returns an empty list if the query fails, so a description that names the catalog is
+    never the reason tool construction fails. The caller then describes the catalog
+    generically, which is a weaker contract than naming it — hence a warning rather than
+    a debug line.
+    """
+    try:
+        result = client.execute_sql(CATALOG_QUERY, database=query_scope(database))
+        catalogs = sorted({row[0] for row in result.rows if row and isinstance(row[0], str)})
+    except Exception:
+        logger.warning(
+            "could not read table_catalog for database %s; the SQL tool description will "
+            "not name the catalog",
+            database.id,
+            exc_info=True,
+        )
+        return []
+    return catalogs
+
+
 def list_managed_databases_json(client: HotdataClient) -> str:
-    rows = [
-        {
-            "description": db.description,
-            "id": db.id,
-            "sql_prefix": f"{db.id}.{{schema}}.{{table}}",
-        }
-        for db in client.list_managed_databases()
-    ]
+    rows = [{"description": db.description, "id": db.id} for db in client.list_managed_databases()]
     return json.dumps(rows, indent=2)
 
 

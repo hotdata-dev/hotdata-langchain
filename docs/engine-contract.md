@@ -15,20 +15,60 @@ schema-qualified as well as bare table names. Those shorter forms *resolve*, but
 types and how each is reached" below — a reference that is not fully qualified can forfeit the
 vector index while still returning correct rows.
 
-Two constraints matter enough to state in a tool description:
+Constraints that matter enough to state in a tool description:
 
-- **An aggregate query must reference at least one column.** `SELECT COUNT(*) FROM t` and
-  `SELECT COUNT(1) FROM t` are rejected with `must either specify a row count or at least one
-  column`; `SELECT COUNT(id) FROM t`, `SELECT MIN(id), MAX(id) FROM t` and
-  `SELECT room_type, COUNT(*) … GROUP BY room_type` all work. The failing shape is the one an
-  agent writes first, so the description gives the workaround.
+- **Some tables reject a projection that names none of their own columns** with `must either
+  specify a row count or at least one column`. It is *not* an aggregate rule and *not*
+  universal (re-verified 2026-08-13 across every table in the test workspace):
+  `SELECT COUNT(*) FROM t` succeeds on most tables, including a 6,001,215-row one, and on
+  `default.public.listings` it fails — as does `SELECT 1 AS k FROM listings LIMIT 1`, which is
+  not an aggregate at all. Naming a column always works, so the description gives
+  `COUNT(<column>)` as the safe form. What distinguishes an affected table is unidentified;
+  tracked as [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37).
+- **A declared managed table with no data rejects every query**, with `Managed table
+  'default.public.customer' is declared but has no data; POST a load before querying`, and
+  reports zero rows in `information_schema.columns`. Worth knowing because it is easily
+  mistaken for the constraint above — the two produce different messages for what looks like
+  the same failing query.
+- **Date and time functions are DataFusion's, not PostgreSQL's**, and one wrong guess fails
+  silently. Verified 2026-08-13:
+
+  | Expression | Result |
+  |---|---|
+  | `to_char(cast('2026-08-12' AS DATE), 'YYYY-MM-DD')` | `'YYYY-MM-DD'` — the pattern itself, **no error** |
+  | `to_char(cast('2026-08-12' AS DATE), '%Y-%m-%d')` | `'2026-08-12'` |
+  | `to_date('2026-08-12', 'YYYY-MM-DD')` | error |
+  | `to_date('2026-08-12', '%Y-%m-%d')` | `2026-08-12` |
+  | `date_sub(cast('2026-08-12' AS DATE), 6)` | error: `Invalid function 'date_sub'. Did you mean 'date_bin'?` |
+  | `cast('2026-08-12' AS DATE) - INTERVAL '6 days'` | `2026-08-06` |
+  | `date_trunc('day', …)`, `now()`, `current_date` | work as expected |
+
+  Format patterns are strftime. A PostgreSQL template contains no `%` directives, so `to_char`
+  emits it verbatim for every row while `to_date` rejects it — the two are inconsistent with
+  each other, which is what makes this easy to walk into. Engine-side, tracked in
+  [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37).
+- **Identifiers are lowercased when stored, and quoting to preserve case fails.** The attached
+  F1 source declares `driverId`; the engine exposes `driverid`. `r.driverId` and `r."raceid"`
+  both resolve, `r."driverId"` fails with a bare `RuntimeError: Bad Request` carrying no body
+  at all — so the usual cause-chain recovery finds nothing to report.
 - **There is no full-text matching in SQL.** No `to_tsvector`, no `plainto_tsquery`. The engine
   answers with `Invalid function 'to_tsvector'. Did you mean 'to_char'?`. `LIKE`/`ILIKE` work as
-  substring tests but cannot rank.
+  substring tests but cannot rank. Note this is about the *PostgreSQL* full-text functions:
+  ranking by relevance inside SQL is available, via `bm25_search` — see below.
 
 **A database scope is required.** An unscoped query fails with `a database is required: set the
-X-Database-Id header or the database_id body field`. Inside a managed database the built-in
-catalog is always `default`.
+X-Database-Id header or the database_id body field`.
+
+**There is no universal catalog name.** A managed database's tables answer to `default`; an
+attached source's tables answer to the *attachment alias*, not to `default`. Verified
+2026-08-13 against `f1_db`: `default.public.results` fails with "table not found" while
+`f1.public.results` returns rows, and `information_schema.tables` lists catalog `f1` across all
+seven of its schemas.
+
+The database record does not settle it either — `GET /databases/{id}` reports
+`default_catalog='default'` for **both** kinds, and `default_schema='main'` for both when the
+actual schema is `public`. `information_schema.tables.table_catalog` is the only authoritative
+source, which is what `hotdata_langchain.databases.query_catalogs` reads.
 
 ## Full-text search
 
@@ -36,9 +76,20 @@ catalog is always `default`.
 bm25_search('catalog.schema.table', 'column', 'query text' [, limit])
 ```
 
-Returns the table's columns plus a trailing `score` (Float32). Three properties shape
+Returns the table's columns plus a trailing `score` (Float32). Four properties shape
 `hotdata_langchain/search.py`:
 
+- **It is a table-valued function, so it composes.** The result is a relation like any other:
+  it joins, groups, and nests in subqueries and CTEs. A cohort defined by relevance can
+  therefore be aggregated *inside one query*, rather than retrieved and passed back as SQL
+  literals. This is the most strategically important property in this file — it is what makes
+  "find the rows about X, then aggregate over all of them" a single query, and it is why
+  `sql_tool_description` names the function rather than pointing only at the search tool.
+
+  The vector side does **not** compose this way: `vector_search` takes a *vector*, not text, so
+  a meaning-defined cohort cannot be expressed in SQL by an agent unaided. Something has to
+  embed the concept first. That asymmetry is tracked in
+  [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39).
 - **Results are not sorted.** Rows come back in rowid order, like SQLite FTS5. Verified: without
   `ORDER BY` the scores came back `8.788, 8.092, 8.034, 8.254, 8.496`. Ranking must be asked for.
 - **The fourth argument is the real bound.** BM25 is top-k, so tantivy needs the bound before
@@ -142,13 +193,18 @@ vectors, the engine reads the width off the stored data; `dimensions` only picks
 width for providers that support several. So an index must be built *after* the first write,
 and a caller cannot assert the width.
 
-**Known rough edge:** one table failed index creation with `could not detect dimension for
-'embedding'` and reproduced on retry, while six tables created fresh — including ones with
-repeated upserts, a delete, and promoted metadata columns — all indexed successfully. The
-trigger was not identified. `List(Float32)` is indexable; the failure is specific to some
-table state, not to the column type. Because the width is read from data rather than supplied,
-there is no client-side workaround. Tracked as
+**Known rough edge:** index creation fails with `could not detect dimension for 'embedding'`
+after a **mixed upsert** — one load that rewrites ids the table already holds *while also*
+adding new ones. Measured across a 25-probe matrix on fresh tables: 0 failures in 6 non-mixed
+shapes (including a pure rewrite and a subset rewrite), 12 failures in 20 mixed runs. It is
+**intermittent, not deterministic** — the same shape gave FAIL, PASS, PASS, PASS on four
+identical tables — so a single passing control proves nothing, and an earlier round of
+"hypotheses ruled out" on that basis is unsound. `List(Float32)` is indexable. Because the
+width is read from data rather than supplied, there is no client-side workaround. Tracked as
 [#52](https://github.com/hotdata-dev/hotdata-langchain/issues/52).
+
+The failure surfaces only on the async job record (`JobsApi.get_job(id).error_message`); the
+`create_index` call itself returns success with status `pending`.
 
 **There is no cross-modality routing in the engine.** `LazyTableProvider::select_best_index` and
 `IndexAwareManagedProvider::select_catalog_index` query the catalog with

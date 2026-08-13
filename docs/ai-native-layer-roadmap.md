@@ -64,6 +64,25 @@ tie-breaking) are settled empirically.
 
 ## Checklist
 
+> **Superseded in part, 2026-08-13.** This checklist predates the downstream LangGraph POC
+> ([`hotdata-agents`](https://github.com/hotdata-dev/hotdata-agents)), which consumed published
+> 0.6.0 with two agents and produced a 15-finding register
+> ([`notes/hdlc-feedback.md`](https://github.com/hotdata-dev/hotdata-agents/blob/main/notes/hdlc-feedback.md)).
+> Items below marked shipped are still shipped, but several shipped *with defects the POC
+> found*. The current order of work is carried by the issues, not by this file:
+> [#59](https://github.com/hotdata-dev/hotdata-langchain/issues/59) model-facing contract →
+> [#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41) tool layer →
+> [#60](https://github.com/hotdata-dev/hotdata-langchain/issues/60) tool results →
+> [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39) semantic search →
+> [#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40) discovery →
+> [#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62) cohort discipline →
+> [#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61) provisioning boundary.
+>
+> The POC's headline result: with a **one-sentence** system prompt, tool routing was correct on
+> every graded question. That is the design intent working — and it is also why a false sentence
+> in a tool description is a behavioural bug rather than a docs nit, since the descriptions are
+> the entire briefing the model gets.
+
 ### Tier 1 — buildable now, zero blockers (this repo + `sdk-python-framework`)
 
 - [x] **BM25 tool.** Shipped as `hotdata_langchain/search.py` — `hotdata_search_text`, with the
@@ -137,13 +156,16 @@ Grouped by code surface:
   `e.reason`, "Bad Request", losing the actionable text); `create_index` since fixed in 0.10.0;
   `resolve_managed_database` falls back to matching non-unique display names; `from_env()`
   silently picks a workspace. The first is the one with demonstrated impact on agent behaviour.
-- **`runtimedb` engine gaps** ([#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)) — ungrouped `COUNT(*)`/`COUNT(1)` rejected while
-  `COUNT(<column>)` works (probable bug, and the shape an agent writes first); no
-  hybrid/RRF primitive for the eventual server-side fusion.
+- **`runtimedb` engine gaps** ([#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)) — some tables reject a projection naming none of
+  their own columns (`COUNT(*)`, `COUNT(1)`, and even `SELECT 1`), while most tables accept
+  all three, so it is neither an aggregate rule nor universal; `to_char` returns an
+  unrecognised format pattern verbatim instead of raising, which silently destroys a column of
+  values; no hybrid/RRF primitive for the eventual server-side fusion.
 - **Vector index dimension detection** ([#52](https://github.com/hotdata-dev/hotdata-langchain/issues/52)) — building an index over an existing
-  embedding column fails on some tables with `could not detect dimension`, reproducibly, while
-  structurally identical tables succeed. Four candidate triggers were tested and ruled out. The
-  width is read from stored data rather than supplied, so no client argument works around it.
+  embedding column fails after a **mixed upsert** (rewritten ids plus new ids in one load), and
+  fails *intermittently* on that shape. Earlier "candidate triggers ruled out" conclusions were
+  each based on a single passing control and do not hold. The width is read from stored data
+  rather than supplied, so no client argument works around it.
 - **ANN lookup key is built from the table reference as written** ([datafusion-vector-search-ext#32](https://github.com/hotdata-dev/datafusion-vector-search-ext/issues/32)) —
   a two-part `schema.table` reference resolves correctly but forfeits the vector index, with
   nothing reported. Worked around in the SQL tool's description until the rule resolves the

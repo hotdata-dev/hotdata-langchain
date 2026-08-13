@@ -206,11 +206,32 @@ def test_search_tool_description_grounds_the_agent(mock_client: MagicMock) -> No
     assert TABLE in tool.description
 
 
-def test_search_description_steers_away_from_matching_text_in_sql() -> None:
-    """The observed failure mode is an agent doing text matching in SQL instead."""
+def test_search_description_steers_away_from_substring_matching_in_sql() -> None:
+    """Saying only that LIKE "works" was observed to pull models into ILIKE '%word%'."""
     description = default_search_description(TABLE, COLUMN).lower()
-    assert "sql cannot rank rows by textual relevance" in description
+    assert "like and ilike" in description
+    assert "not a way to find relevant rows" in description
     assert "score" in description
+
+
+def test_search_description_never_claims_sql_cannot_rank_text() -> None:
+    """It can, via a table-valued function.
+
+    This tool is registered alongside the SQL tool, so both descriptions reach the model in
+    one prompt. The SQL description is pinned against the same claim by
+    ``test_sql_description_never_claims_sql_cannot_rank_text``; asserting it in only one of
+    them leaves the false sentence reachable through the other.
+    """
+    description = default_search_description(TABLE, COLUMN).lower()
+    assert "cannot rank" not in description
+    assert "only way" not in description
+
+
+def test_search_description_sends_aggregates_to_sql_instead_of_literals() -> None:
+    """Measured: carrying ids back capped a cohort at this tool's row limit, not at intent."""
+    description = default_search_description(TABLE, COLUMN).lower()
+    assert "aggregates over the matches" in description
+    assert "rank inside sql instead" in description
 
 
 def test_search_description_names_the_capability_not_the_index() -> None:
