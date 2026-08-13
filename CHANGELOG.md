@@ -49,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the engine gives a prior that holds for divergences not yet found — only date/time
   functions have been probed, so string and numeric formatting remain unverified — where
   "PostgreSQL plus a list of exceptions" only covers the ones already measured.
+- The search tool's description no longer claims that **SQL cannot rank rows by textual
+  relevance**, and no longer tells the model to carry the returned values into SQL as
+  literals. Both tools are registered together, so those two sentences contradicted the SQL
+  description in the same prompt — and the second is the measured failure itself: an agent
+  pasted 100 literal ids into `WHERE id IN (...)`, capping the cohort at the tool's row
+  limit rather than at intent. It now describes itself as the route for listing and
+  inspecting matches, and points at ranking inside SQL when the answer aggregates over
+  them. The `LIKE`/`ILIKE` guard the removed sentence carried is kept.
 - `sql_tool_description` leads with `bm25_search` as a table-valued function that joins, groups
   and nests, and prefers it whenever the answer aggregates over the matches. It previously told
   the model to call the search tool and "pass the values it returns into SQL as literals",

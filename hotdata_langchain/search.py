@@ -122,16 +122,30 @@ def default_search_description(table: str, column: str) -> str:
     Describes the capability ("find rows whose text is relevant") rather than the index
     behind it, so the contract the model is given survives the retrieval strategy
     changing underneath it.
+
+    This tool is registered alongside the SQL tool, so both descriptions reach the model
+    in one prompt and must agree. Two earlier sentences here contradicted it: that SQL
+    cannot rank rows by textual relevance, which is false, and an instruction to carry the
+    returned values into SQL, which is the measured failure — an agent pasted 100 literal
+    ids into `WHERE id IN (...)`, capping the cohort at this tool's row limit rather than
+    at intent. Ranking inside SQL is named as the route for an aggregate; this tool is
+    described as the route for listing and inspecting matches.
+
+    The `LIKE`/`ILIKE` guard the removed sentence carried is kept, because stating only
+    that `LIKE` "works" was observed to pull models into `ILIKE '%word%'` instead of
+    searching.
     """
     return (
         f"Find rows of {table} whose '{column}' text is relevant to a natural-language "
-        "query. This is the only way to match on what the text says — SQL cannot rank "
-        "rows by textual relevance.\n"
+        "query, ranked by relevance. LIKE and ILIKE only test for a literal substring you "
+        "already know, so they are a filter, not a way to find relevant rows.\n"
         "Returns the best-matching rows ordered by a 'score' column, highest first; "
         "scores are comparable within one result set but not across queries. Ask for "
         "more with 'k' when you need a wider net.\n"
-        "Use it to identify which rows are relevant, then take the values you need from "
-        "the results into the SQL tool for filters, joins and aggregates."
+        "Use this to list or inspect the matches themselves. When the answer aggregates "
+        "over the matches rather than listing them, rank inside SQL instead — that keeps "
+        "the whole cohort in the query, where carrying values back as literals caps it at "
+        "this tool's row limit."
     )
 
 

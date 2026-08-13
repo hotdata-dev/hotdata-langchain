@@ -18,7 +18,10 @@ from hotdata_framework.databases import api_error_message, managed_database_from
 
 logger = logging.getLogger(__name__)
 
-CATALOG_QUERY = "SELECT DISTINCT table_catalog FROM information_schema.tables"
+CATALOG_QUERY = (
+    "SELECT DISTINCT table_catalog FROM information_schema.tables "
+    "WHERE table_schema <> 'information_schema'"
+)
 
 
 def resolve_database_by_id(
@@ -76,14 +79,26 @@ def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str
     an attached source's tables answer to the attachment's alias instead, so ``default``
     resolves nothing there.
 
+    Catalogs holding nothing but their own ``information_schema`` are excluded, so a
+    scope exposing one empty catalog alongside an attachment still names the attachment.
+    The engine has not been observed listing ``information_schema`` in its own output, so
+    that filter matches no rows today.
+
     Returns an empty list if the query fails, so a description that names the catalog is
-    never the reason tool construction fails.
+    never the reason tool construction fails. The caller then describes the catalog
+    generically, which is a weaker contract than naming it — hence a warning rather than
+    a debug line.
     """
     try:
         result = client.execute_sql(CATALOG_QUERY, database=query_scope(database))
         catalogs = sorted({row[0] for row in result.rows if row and isinstance(row[0], str)})
     except Exception:
-        logger.debug("could not read table_catalog for database %s", database.id, exc_info=True)
+        logger.warning(
+            "could not read table_catalog for database %s; the SQL tool description will "
+            "not name the catalog",
+            database.id,
+            exc_info=True,
+        )
         return []
     return catalogs
 
