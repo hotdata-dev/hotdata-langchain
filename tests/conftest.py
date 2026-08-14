@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,7 +16,8 @@ from hotdata_framework import ManagedDatabase, QueryResult
 def parquet_file(tmp_path: Path) -> Path:
     """A real parquet file on disk, so a load reads real magic bytes rather than a stub."""
     path = tmp_path / "orders.parquet"
-    pq.write_table(pa.table({"id": [1, 2, 3], "label": ["a", "b", "c"]}), path)
+    table = pa.table({"id": [1, 2, 3], "label": ["a", "b", "c"]})
+    pq.write_table(table, path)  # type: ignore[no-untyped-call]  # pyarrow ships no stubs
     return path
 
 
@@ -54,7 +55,7 @@ def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def serve(monkeypatch: pytest.MonkeyPatch, public_dns: None):
+def serve(monkeypatch: pytest.MonkeyPatch, public_dns: None) -> Callable[..., FakeOpener]:
     """Answer the next fetch with this payload, and hand back the opener that saw it."""
 
     def _serve(payload: bytes, headers: dict[str, str] | None = None) -> FakeOpener:

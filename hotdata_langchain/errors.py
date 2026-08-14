@@ -89,11 +89,12 @@ def error_feedback(tool: ToolT) -> ToolT:
     parameter, and a bare ``*args, **kwargs`` wrapper would silently stop that reaching
     the retriever.
 
-    A successful result is returned exactly as the tool produced it. Coercing it to
-    ``str`` would break a tool declaring ``response_format="content_and_artifact"``,
-    which returns a ``(content, artifact)`` pair: stringifying the pair makes LangChain
-    reject it, so a *successful* call would abort the graph — the failure this helper
-    exists to prevent, arriving through the path it was meant to protect.
+    A successful result is returned exactly as the tool produced it, and a failure is
+    reported in whatever shape the tool declared. Both matter for
+    ``response_format="content_and_artifact"``, which requires a ``(content, artifact)``
+    pair on every call: coercing a successful pair to ``str``, or reporting a failure as a
+    bare string, makes LangChain raise and abort the graph — the failure this helper exists
+    to prevent, arriving through the path meant to protect against it.
 
     LangGraph's control-flow exceptions are re-raised rather than reported. They are
     ordinary ``Exception`` subclasses, so a tool calling ``interrupt()`` for human
@@ -108,10 +109,11 @@ def error_feedback(tool: ToolT) -> ToolT:
     func = getattr(tool, "func", None)
     coroutine = getattr(tool, "coroutine", None)
 
+    artifact = getattr(tool, "response_format", None) == "content_and_artifact"
     if func is not None:
-        update["func"] = _wrap_sync(func, tool.name)
+        update["func"] = _wrap_sync(func, tool.name, artifact=artifact)
     if coroutine is not None:
-        update["coroutine"] = _wrap_async(coroutine, tool.name)
+        update["coroutine"] = _wrap_async(coroutine, tool.name, artifact=artifact)
     if not update:
         raise TypeError(
             f"cannot add error feedback to tool {tool.name!r}: it exposes neither a "
@@ -122,7 +124,7 @@ def error_feedback(tool: ToolT) -> ToolT:
     return tool.model_copy(update=update)
 
 
-def _wrap_sync(func: Any, name: str) -> Any:
+def _wrap_sync(func: Any, name: str, *, artifact: bool) -> Any:
     @functools.wraps(func)
     def safe(*args: Any, **kwargs: Any) -> Any:
         try:
@@ -130,12 +132,12 @@ def _wrap_sync(func: Any, name: str) -> Any:
         except _GRAPH_CONTROL_FLOW:
             raise
         except Exception as e:  # nothing else may escape to the graph
-            return _error_payload(e, name)
+            return _error_payload(e, name, artifact=artifact)
 
     return safe
 
 
-def _wrap_async(coroutine: Any, name: str) -> Any:
+def _wrap_async(coroutine: Any, name: str, *, artifact: bool) -> Any:
     @functools.wraps(coroutine)
     async def safe(*args: Any, **kwargs: Any) -> Any:
         try:
@@ -143,15 +145,22 @@ def _wrap_async(coroutine: Any, name: str) -> Any:
         except _GRAPH_CONTROL_FLOW:
             raise
         except Exception as e:  # nothing else may escape to the graph
-            return _error_payload(e, name)
+            return _error_payload(e, name, artifact=artifact)
 
     return safe
 
 
-def _error_payload(exc: BaseException, name: str) -> str:
+def _error_payload(exc: BaseException, name: str, *, artifact: bool) -> str | tuple[str, None]:
+    """Report the failure in the shape the tool declared it returns.
+
+    A tool set to ``content_and_artifact`` is required to return a pair even when it
+    failed. Handing it a bare string makes LangChain raise, which would abort the graph on
+    the error path after the success path was fixed — the same defect, moved.
+    """
     message = engine_error_message(exc)
     logger.warning("tool %s failed; returning the error to the model: %s", name, message)
-    return json.dumps({"error": message})
+    payload = json.dumps({"error": message})
+    return (payload, None) if artifact else payload
 
 
 def with_error_feedback(tools: Iterable[ToolT]) -> list[ToolT]:

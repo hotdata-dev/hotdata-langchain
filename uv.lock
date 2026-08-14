@@ -292,6 +292,7 @@ demo = [
 ]
 dev = [
     { name = "langchain-tests" },
+    { name = "langgraph" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -313,6 +314,7 @@ demo = [
 ]
 dev = [
     { name = "langchain-tests", specifier = ">=1.0" },
+    { name = "langgraph", specifier = ">=1.0" },
     { name = "mypy", specifier = ">=1.5" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.5" },

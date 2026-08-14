@@ -221,6 +221,36 @@ def test_an_artifact_tool_survives_a_successful_call() -> None:
     assert [d.page_content for d in message.artifact] == ["hello"]
 
 
+def test_an_artifact_tool_survives_a_failing_call() -> None:
+    """The failure path has to return a pair too, or the fix just moves the abort.
+
+    A ``content_and_artifact`` tool is required to return two values on every call, so
+    reporting the error as a bare string raises exactly where the success path used to.
+    """
+
+    class Retriever(BaseRetriever):
+        def _get_relevant_documents(self, query: str, **kwargs: Any) -> list[Document]:
+            raise RuntimeError("Bad Request")
+
+    tool = create_retriever_tool(
+        Retriever(), "search_docs", "d" * 50, response_format="content_and_artifact"
+    )
+    call = {"name": "search_docs", "args": {"query": "x"}, "id": "1", "type": "tool_call"}
+    message = error_feedback(tool).invoke(call)
+    assert json.loads(message.content) == {"error": "Bad Request"}
+    assert message.artifact is None
+
+
+def test_a_plain_tool_still_reports_a_failure_as_a_string() -> None:
+    """Only a tool that asked for a pair gets one; the default envelope is unchanged."""
+    wrapped = error_feedback(tool_from(func=_raise_bad_request))
+    assert json.loads(wrapped.invoke({})) == {"error": "Bad Request"}
+
+
+def _raise_bad_request() -> str:
+    raise RuntimeError("Bad Request")
+
+
 def test_a_non_string_result_is_not_coerced() -> None:
     """The wrapper reports failures; formatting the result is LangChain's job, not ours."""
     wrapped = error_feedback(tool_from(func=lambda: {"rows": [1, 2]}))
@@ -234,9 +264,10 @@ def test_a_graph_interrupt_is_not_reported_as_an_error() -> None:
     approval it was waiting on, with only a nonsense error to show for it.
     """
     from langgraph.errors import GraphInterrupt
+    from langgraph.types import Interrupt
 
     def needs_approval() -> str:
-        raise GraphInterrupt(("pause here",))
+        raise GraphInterrupt([Interrupt(value="approve this?")])
 
     wrapped = error_feedback(tool_from(func=needs_approval, name="approve"))
     with pytest.raises(GraphInterrupt):
@@ -245,9 +276,10 @@ def test_a_graph_interrupt_is_not_reported_as_an_error() -> None:
 
 async def test_a_graph_interrupt_is_not_reported_as_an_error_under_async() -> None:
     from langgraph.errors import GraphInterrupt
+    from langgraph.types import Interrupt
 
     async def needs_approval() -> str:
-        raise GraphInterrupt(("pause here",))
+        raise GraphInterrupt([Interrupt(value="approve this?")])
 
     wrapped = error_feedback(tool_from(coroutine=needs_approval, name="approve"))
     with pytest.raises(GraphInterrupt):
