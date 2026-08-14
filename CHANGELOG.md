@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.8.0] - 2026-08-14
+
 ### Added
 
 - `make_hotdata_tools(..., handle_errors=True)` returns each tool's failures as
@@ -53,7 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A name constant per tool — `DEFAULT_SQL_TOOL_NAME`, `DEFAULT_LIST_DATABASES_TOOL_NAME`,
   `DEFAULT_CREATE_DATABASE_TOOL_NAME`, `DEFAULT_LOAD_TABLE_TOOL_NAME` — joining the two that
   were already exported. Selecting a subset of the tools meant hardcoding the strings.
-
 
 ## [0.7.0] - 2026-08-13
 
