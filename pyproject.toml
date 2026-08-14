@@ -23,6 +23,10 @@ dev = [
   "ruff>=0.5",
   "mypy>=1.5",
   "langchain-tests>=1.0",
+  # The tools are wrapped for a graph, so the tests need the graph's control-flow
+  # exceptions. Without it errors.py silently takes its no-langgraph branch and the
+  # interrupt guard goes untested.
+  "langgraph>=1.0",
 ]
 demo = [
   "langchain>=1.0",

@@ -219,8 +219,28 @@ def test_unscoped_tools_never_probe_for_a_catalog() -> None:
     client.execute_sql.assert_not_called()
 
 
-def test_load_description_states_the_accepted_input() -> None:
-    """Verified: the tool takes a local parquet path, not a URL."""
+def test_load_description_states_both_accepted_inputs() -> None:
+    """A deployed agent has no filesystem to write to, so the URL form is the reachable one."""
     description = descriptions()["hotdata_load_managed_table"].lower()
     assert "parquet" in description
-    assert "url" in description
+    assert "local filesystem" in description
+    assert "https:// url" in description
+
+
+def test_load_description_no_longer_rules_out_urls() -> None:
+    """The old wording was true when written and is now the opposite of the behaviour."""
+    description = descriptions()["hotdata_load_managed_table"].lower()
+    assert "not urls" not in description
+    assert "only local parquet paths" not in description
+
+
+def test_load_description_states_that_a_url_must_be_public() -> None:
+    """Otherwise the model spends a turn discovering the rule from a rejection."""
+    description = descriptions()["hotdata_load_managed_table"]
+    assert "not an internal address" in description
+
+
+def test_load_description_drops_the_public_url_rule_when_it_does_not_apply() -> None:
+    """A deployment loading from an internal store would be told the opposite of the truth."""
+    description = descriptions(allow_private_hosts=True)["hotdata_load_managed_table"]
+    assert "not an internal address" not in description

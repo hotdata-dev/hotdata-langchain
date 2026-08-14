@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `make_hotdata_tools(..., handle_errors=True)` returns each tool's failures as
+  `{"error": "<engine message>"}` instead of raising. An exception out of a tool aborts the
+  whole LangGraph run, so one invalid query ended the conversation rather than costing a turn,
+  and neither obvious escape hatch applies: `create_agent` does not accept a `ToolNode`, and
+  `BaseTool.handle_tool_error` only catches `ToolException` while these raise `RuntimeError`.
+  Off by default — outside an agent loop, raising is still right ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)).
+- `engine_error_message(exc)` and `with_error_feedback(tools)` are public. The framework raises
+  `RuntimeError("Bad Request")` while the message the model can act on
+  (`Invalid function 'date_sub'. Did you mean 'date_bin'?`) sits in the API response body
+  further down the exception chain; a deployed agent recovered from two invalid queries in one
+  turn each purely because it could read those. `with_error_feedback` applies the wrapping to
+  tools built elsewhere, such as a retriever tool registered alongside these. Both the sync and
+  async callables are wrapped: LangChain prefers `coroutine` under async, which is how
+  `langgraph dev` and a deployed Agent Server run, so wrapping only `func` — as the demo's
+  version did — leaves the error handling unused in exactly the environment that needs it.
+  A successful result is passed through untouched, so a tool declaring
+  `response_format="content_and_artifact"` keeps its `(content, artifact)` pair, and LangGraph's
+  control-flow exceptions are re-raised rather than reported, so a tool calling `interrupt()`
+  for human approval still pauses the graph instead of returning its pause as an error.
+- `hotdata_load_managed_table` accepts an `http(s)` URL as well as a local path, downloading it
+  and removing the temporary copy afterwards whether or not the load succeeds. A deployed Agent
+  Server has no filesystem the requesting user can write to, so a path-only load could ingest
+  nothing the process did not already hold. A URL that answers 200 with an HTML login or error
+  page is rejected on parquet's magic bytes before anything is uploaded, and a missing local
+  path now says what forms are accepted instead of raising a bare `FileNotFoundError`.
+  `hotdata_langchain.databases.fetch_parquet` exposes the download on its own.
+- The URL fetch refuses an address that is not publicly routable, and caps the download at
+  1 GiB. The URL is chosen by the model, and a model's inputs include whatever text it
+  retrieved, so an instruction planted in a document is enough to pick one — without the check
+  the agent process is a fetcher for whatever its own network can see, including a cloud
+  metadata endpoint, and a load completes the loop by landing the response in a table the agent
+  can then read. Every resolved address is checked, and again on each redirect, since a public
+  URL that 302s to a private one is the standard bypass. `allow_private_hosts=True` on
+  `make_hotdata_tools`, `load_managed_table` and `fetch_parquet` lifts it for a deployment whose
+  data really is on an internal host; `max_bytes` on `fetch_parquet` raises the size cap. This
+  narrows the reachable surface rather than sealing it — the address is resolved twice, so a DNS
+  server that answers differently each time can still get through.
+- `management_tools=False` on `make_hotdata_tools` leaves out the three managed-database tools,
+  for an agent scoped to one fixed database that cannot use them. Not called `read_only`:
+  listing databases is itself a read, so what it removes is the managed-database workflow
+  rather than everything that writes.
+- A name constant per tool — `DEFAULT_SQL_TOOL_NAME`, `DEFAULT_LIST_DATABASES_TOOL_NAME`,
+  `DEFAULT_CREATE_DATABASE_TOOL_NAME`, `DEFAULT_LOAD_TABLE_TOOL_NAME` — joining the two that
+  were already exported. Selecting a subset of the tools meant hardcoding the strings.
+
 
 ## [0.7.0] - 2026-08-13
 

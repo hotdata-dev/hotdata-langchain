@@ -46,12 +46,61 @@ id of each.
 | `hotdata_execute_sql` | Run a SQL query and return rows as JSON |
 | `hotdata_list_managed_databases` | List available managed databases, with the id of each |
 | `hotdata_create_managed_database` | Create a new managed database and return its id |
-| `hotdata_load_managed_table` | Load a parquet file into a managed table, addressed by database id |
+| `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
 | `hotdata_describe_tables` | List tables, or one table's columns and types |
 | `hotdata_search_text` | Full-text search an indexed column, ranked by relevance (opt-in — see below) |
 
 The descriptions carry the engine's contract — dialect, what SQL can and cannot do, and where
 to look things up — so an agent does not need a system prompt explaining the query engine.
+
+Every name in that table is exported as a constant (`hl.DEFAULT_SQL_TOOL_NAME` and so on), so
+an application selecting a subset does not have to hardcode strings.
+
+## Choosing which tools an agent gets
+
+An agent that reads one fixed database cannot use the three managed-database tools, and giving
+it tools it can only misuse costs context on every turn. Two flags decide the set:
+
+```python
+tools = hl.make_hotdata_tools(client, database_id="dbid...")                        # all of them
+tools = hl.make_hotdata_tools(client, database_id="dbid...", management_tools=False)  # SQL + describe
+tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=False)
+```
+
+`management_tools=False` drops listing, creating and loading. It is not called `read_only`:
+listing databases is itself a read, so the set it removes is the managed-database workflow
+rather than everything that writes.
+
+## Letting the model recover from a failed call
+
+The tools raise on failure, which is right in a script and wrong in an agent: an exception out
+of a tool aborts the whole LangGraph run, so one invalid query ends the conversation instead of
+costing a turn. `handle_errors=True` returns the failure as `{"error": "..."}` instead:
+
+```python
+tools = hl.make_hotdata_tools(client, database_id="dbid...", handle_errors=True)
+```
+
+What reaches the model is the engine's own message, not the framework's `RuntimeError("Bad
+Request")` — `Invalid function 'date_sub'. Did you mean 'date_bin'?` is something a model can
+act on, and was observed correcting its query on the next call. `hl.engine_error_message(exc)`
+exposes that lookup on its own, and `hl.with_error_feedback(tools)` applies the same wrapping to
+tools built elsewhere, such as a retriever tool registered alongside these:
+
+```python
+from langchain_core.tools import create_retriever_tool
+
+tools = hl.with_error_feedback([*tools, create_retriever_tool(retriever, "search_docs", "...")])
+```
+
+Both `func` and `coroutine` are wrapped. Wrapping only the sync callable is a trap: LangChain
+prefers `coroutine` under async, which is how `langgraph dev` and a deployed Agent Server run,
+so a sync-only wrapper goes unused in exactly the environment that needs it.
+
+Only failures are touched. A successful result comes back exactly as the tool produced it, so a
+tool declaring `response_format="content_and_artifact"` keeps its pair intact, and LangGraph's
+control-flow exceptions are re-raised — a tool calling `interrupt()` for human approval still
+pauses the graph rather than reporting the pause as an error.
 
 ## Letting the agent discover the schema
 
@@ -89,9 +138,34 @@ created = tools["hotdata_create_managed_database"].invoke({
 tools["hotdata_load_managed_table"].invoke({
     "database_id": json.loads(created)["id"],
     "table": "orders",
-    "file": "/path/to/orders.parquet",
+    "file": "/path/to/orders.parquet",   # or "https://example.com/orders.parquet"
 })
 ```
+
+A URL is downloaded and uploaded for you, and the temporary copy is removed afterwards whether
+or not the load succeeds. This is the form that works from a deployed agent: an Agent Server
+has no filesystem the requesting user can put a file on, so a path-only load can ingest nothing
+the process did not already hold. Only parquet is accepted, and a URL that answers 200 with an
+HTML login or error page is rejected before anything is uploaded.
+
+Two limits apply, because the URL is chosen by the model and a model's inputs include whatever
+text it retrieved — an instruction planted in a document is enough to pick one:
+
+- **It must resolve to a public address.** Otherwise the agent process becomes a fetcher for
+  whatever its own network can see, which in a deployment is usually more than the public
+  internet: a cloud metadata endpoint on `169.254.169.254`, an internal service on a private
+  range. A load completes the loop, since an internal URL serving parquet would land in the
+  workspace and be readable from SQL on the next turn. Every address the host resolves to is
+  checked, and again on each redirect — a public URL that 302s inwards is the standard bypass.
+  Pass `allow_private_hosts=True` to `make_hotdata_tools` when your data genuinely sits on an
+  internal host.
+- **It is capped at 1 GiB.** `Content-Length` is checked first, so an oversized file is usually
+  refused before any of it transfers, and the stream is counted as well because that header is
+  optional and can lie. `hl.databases.fetch_parquet(..., max_bytes=...)` raises the cap.
+
+This narrows what the fetch can reach rather than sealing it: the address is resolved for the
+check and again by the HTTP client, so a DNS server answering differently each time can still
+get through. A deployment on an untrusted network wants an egress proxy in front of this.
 
 ## Full-text search
 
@@ -344,7 +418,8 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...")
 **Databases are addressed by id, never by name.** A database name is a display label and is
 not unique, so a name lookup can silently resolve to the wrong database — and the agent's
 `hotdata_load_managed_table` overwrites the table it loads into. Passing a name raises
-`KeyError`. Ids come from `client.list_managed_databases()`, the
+`KeyError` — or, under `handle_errors=True`, returns it to the model rather than resolving
+anything. Ids come from `client.list_managed_databases()`, the
 `hotdata_list_managed_databases` tool, or the response of a create.
 
 The id is resolved once when the tools are built, so a bad id fails there rather than on the

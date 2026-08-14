@@ -128,11 +128,16 @@ description instead, the model uses the search tool and feeds its results into S
 even with no system-prompt guidance at all.
 
 **Tool errors have to reach the model.** The tools raise on failure, and an exception out
-of a tool aborts the whole graph — so the demo wraps them (`with_error_feedback`) to
-return the error as a message instead. The wrapper also digs the engine's real message
-out of the exception chain: the framework raises `RuntimeError("Bad Request")` while the
-useful text sits in the underlying API response body. Descriptions lower the failure
-rate; readable errors are what let the model recover from what slips through.
+of a tool aborts the whole graph — so the demo wraps them with `hl.with_error_feedback`,
+which returns the error as a message instead. That also digs the engine's real message out
+of the exception chain: the framework raises `RuntimeError("Bad Request")` while the useful
+text sits in the underlying API response body. Descriptions lower the failure rate;
+readable errors are what let the model recover from what slips through.
+
+The wrapping used to live in this file. It moved into the package once a second consumer
+needed it, and gained the fix the local copy was missing: it wraps the async callable too,
+which is the one LangChain actually calls under `langgraph dev` or a deployed Agent Server.
+`make_hotdata_tools(..., handle_errors=True)` is the same thing without the extra call.
 
 ### Why the generated SQL looks the way it does
 

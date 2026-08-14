@@ -10,7 +10,7 @@ def main() -> None:
     tools = hl.make_hotdata_tools(client)
     by_name = {tool.name: tool for tool in tools}
 
-    create = by_name["hotdata_create_managed_database"]
+    create = by_name[hl.DEFAULT_CREATE_DATABASE_TOOL_NAME]
     created = create.invoke(
         {
             "name": "demo_sales",
@@ -23,12 +23,13 @@ def main() -> None:
     # 'name' was a display label; the id is what addresses the database from here on.
     database_id = json.loads(created)["id"]
 
-    load = by_name["hotdata_load_managed_table"]
+    load = by_name[hl.DEFAULT_LOAD_TABLE_TOOL_NAME]
     print(
         load.invoke(
             {
                 "database_id": database_id,
                 "table": "orders",
+                # A URL works too, and is the only form reachable from a deployed agent.
                 "file": "/path/to/orders.parquet",
                 "schema_name": "public",
             }

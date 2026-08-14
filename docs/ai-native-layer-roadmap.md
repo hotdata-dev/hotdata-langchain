@@ -177,10 +177,14 @@ Grouped by code surface:
 - **Discovery surface** ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — report which columns are searchable in `hotdata_describe_tables`.
   Newly unblocked: indexes are invisible to SQL but `IndexesApi.list_indexes` returns them, so
   this needs no engine change. It is what would let the search corpus stop being pinned.
-- **Tool-layer robustness** ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)) — fold the demo's `with_error_feedback` into the package (a raising
-  tool aborts the whole LangGraph run, and `handle_tool_error` only catches `ToolException`);
-  URL-based table loads, since the demo has to download its fixture by hand and an agent
-  cannot.
+- ~~**Tool-layer robustness**~~ ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)) — **done.** `with_error_feedback` and `engine_error_message` are
+  package API, `make_hotdata_tools(handle_errors=True)` turns the wrapping on, and both the
+  sync and async callables are wrapped — the async one is what LangChain actually calls in a
+  deployed agent, and the demo's version missed it. `hotdata_load_managed_table` now accepts a
+  URL, which is the only ingest route open to an agent with no filesystem of its own — bounded
+  by a public-address check and a size cap, since the URL is model-chosen and therefore
+  reachable by a planted instruction. Also added a name constant per tool and
+  `management_tools=False`, so an application selecting a subset stops hardcoding strings.
 
 Already tracked elsewhere and deliberately not duplicated: point-lookup generalization
 (hotdata-langchain#34) and the sorted-index cost model (runtimedb#481).

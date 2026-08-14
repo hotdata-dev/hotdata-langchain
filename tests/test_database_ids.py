@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -179,7 +180,10 @@ def test_load_tool_takes_a_database_id_argument(mock_client: MagicMock) -> None:
 
 
 def test_load_tool_resolves_the_agent_supplied_id_by_id(
-    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+    mock_client: MagicMock,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+    parquet_file: Path,
 ) -> None:
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id=managed_db.default_connection_id,
@@ -193,7 +197,7 @@ def test_load_tool_resolves_the_agent_supplied_id_by_id(
             {
                 "database_id": managed_db.id,
                 "table": "orders",
-                "file": "/tmp/orders.parquet",
+                "file": str(parquet_file),
             }
         )
     )

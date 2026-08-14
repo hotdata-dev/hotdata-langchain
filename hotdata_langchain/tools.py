@@ -19,6 +19,7 @@ from hotdata_langchain.databases import (
     query_scope,
     resolve_database_by_id,
 )
+from hotdata_langchain.errors import with_error_feedback
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
     make_hotdata_describe_tables_tool,
@@ -28,6 +29,11 @@ from hotdata_langchain.search import (
     DEFAULT_SEARCH_TOOL_NAME,
     make_hotdata_search_tool,
 )
+
+DEFAULT_SQL_TOOL_NAME = "hotdata_execute_sql"
+DEFAULT_LIST_DATABASES_TOOL_NAME = "hotdata_list_managed_databases"
+DEFAULT_CREATE_DATABASE_TOOL_NAME = "hotdata_create_managed_database"
+DEFAULT_LOAD_TABLE_TOOL_NAME = "hotdata_load_managed_table"
 
 
 def sql_tool_description(
@@ -194,6 +200,9 @@ def make_hotdata_tools(
     search_k: int = DEFAULT_SEARCH_LIMIT,
     search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
     describe_tables: bool = True,
+    management_tools: bool = True,
+    handle_errors: bool = False,
+    allow_private_hosts: bool = False,
     catalog: str | None = None,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and managed database workflows.
@@ -208,6 +217,26 @@ def make_hotdata_tools(
     ``describe_tables`` (on by default) adds a schema-introspection tool, so the agent
     can look up tables and columns instead of guessing them. It reads
     ``information_schema`` in whichever database the tools are scoped to.
+
+    ``management_tools`` (on by default) adds the three tools that work on managed
+    databases themselves — listing, creating and loading. Turn it off for an agent that
+    reads one fixed database, where they are surface the model can only misuse. The flag
+    is not called ``read_only``: listing databases is itself a read, so the set it removes
+    is the managed-database workflow rather than everything that writes.
+
+    ``handle_errors`` returns each tool's failures as ``{"error": "<engine message>"}``
+    instead of raising. An exception out of a tool aborts the whole agent run, so one
+    invalid query ends the conversation rather than costing a turn; with this on, the
+    model reads the engine's message and retries. Off by default, because these tools are
+    thin pass-throughs outside an agent loop and swallowing an exception there would hide
+    a real failure. See :func:`hotdata_langchain.errors.with_error_feedback` to apply the
+    same wrapping to tools built elsewhere.
+
+    ``allow_private_hosts`` lets the load tool fetch a URL resolving to a private address.
+    Off by default: the URL is chosen by the model, and the model's inputs include text it
+    retrieved, so the default must not let a planted link reach a service only this process
+    can see. Turn it on when the data genuinely sits on an internal host. See
+    :func:`hotdata_langchain.databases.reject_unroutable_url`.
 
     Passing both ``search_table`` and ``search_column`` appends a full-text search tool
     bound to that column, which requires a BM25 index on it. ``search_columns`` selects
@@ -264,21 +293,29 @@ def make_hotdata_tools(
         file: str,
         schema_name: str = DEFAULT_SCHEMA,
     ) -> str:
-        """Load a local parquet file into a declared managed table."""
+        """Load a parquet file, local or at a URL, into a declared managed table."""
         loaded = load_managed_table(
             client,
             database_id=database_id,
             table=table,
             file=file,
             schema=schema_name or DEFAULT_SCHEMA,
+            allow_private_hosts=allow_private_hosts,
         )
         return json.dumps(load_result_summary(loaded), indent=2)
+
+    # Saves the model a turn it would otherwise spend discovering the rule from an error.
+    url_rule = (
+        ""
+        if allow_private_hosts
+        else " (a URL must be on the public internet, not an internal address)"
+    )
 
     has_search = search_table is not None and search_column is not None
     tools = [
         StructuredTool.from_function(
             func=hotdata_execute_sql,
-            name="hotdata_execute_sql",
+            name=DEFAULT_SQL_TOOL_NAME,
             description=sql_tool_description(
                 search_tool_name if has_search else None,
                 DEFAULT_DESCRIBE_TOOL_NAME if describe_tables else None,
@@ -287,9 +324,12 @@ def make_hotdata_tools(
                 catalogs=catalogs,
             ),
         ),
+    ]
+
+    management = [
         StructuredTool.from_function(
             func=hotdata_list_managed_databases,
-            name="hotdata_list_managed_databases",
+            name=DEFAULT_LIST_DATABASES_TOOL_NAME,
             description=(
                 "List the managed databases in this workspace. Returns each database's "
                 "'id' and its human-readable 'description'. Names are display labels and "
@@ -300,7 +340,7 @@ def make_hotdata_tools(
         ),
         StructuredTool.from_function(
             func=hotdata_create_managed_database,
-            name="hotdata_create_managed_database",
+            name=DEFAULT_CREATE_DATABASE_TOOL_NAME,
             description=(
                 "Create a managed database to hold tables you load. 'name' is a display "
                 "label only and is not an identifier; the response carries the 'id', which "
@@ -311,19 +351,22 @@ def make_hotdata_tools(
         ),
         StructuredTool.from_function(
             func=hotdata_load_managed_table,
-            name="hotdata_load_managed_table",
+            name=DEFAULT_LOAD_TABLE_TOOL_NAME,
             description=(
-                "Load a parquet file from the local filesystem into a table that was "
-                "declared on a managed database, replacing whatever the table held. "
-                "'database_id' must be a database id returned by "
+                "Load a parquet file into a table that was declared on a managed "
+                "database, replacing whatever the table held. 'file' is either a path on "
+                "the local filesystem or an http:// or https:// URL, which is downloaded "
+                f"and uploaded for you{url_rule}. 'database_id' must be a database id returned by "
                 "hotdata_list_managed_databases or hotdata_create_managed_database — call "
                 "one of those first if you do not have an id. A database name is rejected: "
                 "names are not unique, and this load overwrites the table, so the wrong "
-                "target would destroy data. Only local parquet paths are accepted — not "
-                "URLs, and not other file formats."
+                "target would destroy data. Only parquet is accepted, not CSV or JSON."
             ),
         ),
     ]
+
+    if management_tools:
+        tools.extend(management)
 
     if describe_tables:
         tools.append(make_hotdata_describe_tables_tool(client, database_id=database))
@@ -343,4 +386,4 @@ def make_hotdata_tools(
             )
         )
 
-    return tools
+    return with_error_feedback(tools) if handle_errors else tools

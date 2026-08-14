@@ -17,6 +17,11 @@ from hotdata_langchain.databases import (
     managed_database_summary,
     resolve_database_by_id,
 )
+from hotdata_langchain.errors import (
+    engine_error_message,
+    error_feedback,
+    with_error_feedback,
+)
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
     describe_tables_json,
@@ -31,6 +36,10 @@ from hotdata_langchain.search import (
     make_hotdata_search_tool,
 )
 from hotdata_langchain.tools import (
+    DEFAULT_CREATE_DATABASE_TOOL_NAME,
+    DEFAULT_LIST_DATABASES_TOOL_NAME,
+    DEFAULT_LOAD_TABLE_TOOL_NAME,
+    DEFAULT_SQL_TOOL_NAME,
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
@@ -41,9 +50,13 @@ from hotdata_langchain.vectorstore import (
 )
 
 __all__ = [
+    "DEFAULT_CREATE_DATABASE_TOOL_NAME",
     "DEFAULT_DESCRIBE_TOOL_NAME",
+    "DEFAULT_LIST_DATABASES_TOOL_NAME",
+    "DEFAULT_LOAD_TABLE_TOOL_NAME",
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_TOOL_NAME",
+    "DEFAULT_SQL_TOOL_NAME",
     "DISTANCE_FUNCTIONS",
     "SCORE_COLUMN",
     "HotdataClient",
@@ -55,6 +68,8 @@ __all__ = [
     "bm25_search_sql",
     "create_managed_database",
     "describe_tables_json",
+    "engine_error_message",
+    "error_feedback",
     "execute_sql_json",
     "from_env",
     "list_managed_databases_json",
@@ -66,4 +81,5 @@ __all__ = [
     "managed_database_summary",
     "resolve_database_by_id",
     "result_rows_for_llm",
+    "with_error_feedback",
 ]
