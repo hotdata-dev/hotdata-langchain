@@ -252,8 +252,9 @@ cross-repo list in [`ai-native-layer-roadmap.md`](./ai-native-layer-roadmap.md).
 
 `hl.engine_error_message(exc)` walks that chain and returns the engine's text, and
 `make_hotdata_tools(handle_errors=True)` hands it to the model instead of raising. That is a
-recovery, not a fix — the framework surfacing its own message is tracked as `sdk-python`#36, and
-until it lands every consumer either uses this or sees `"Bad Request"`.
+recovery, not a fix — the framework surfacing its own message is tracked in
+[#36](https://github.com/hotdata-dev/hotdata-langchain/issues/36), and until it lands every
+consumer either uses this or sees `"Bad Request"`.
 
 ## What an agent does without guidance
 

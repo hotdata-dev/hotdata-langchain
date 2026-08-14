@@ -183,9 +183,8 @@ Grouped by code surface:
   deployed agent, and the demo's version missed it. `hotdata_load_managed_table` now accepts a
   URL, which is the only ingest route open to an agent with no filesystem of its own — bounded
   by a public-address check and a size cap, since the URL is model-chosen and therefore
-  reachable by a planted instruction. Also
-  added a name constant per tool and `management_tools=False`, so an application selecting a
-  subset stops hardcoding strings.
+  reachable by a planted instruction. Also added a name constant per tool and
+  `management_tools=False`, so an application selecting a subset stops hardcoding strings.
 
 Already tracked elsewhere and deliberately not duplicated: point-lookup generalization
 (hotdata-langchain#34) and the sorted-index cost model (runtimedb#481).
