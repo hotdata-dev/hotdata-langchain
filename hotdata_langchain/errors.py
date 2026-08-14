@@ -10,6 +10,16 @@ from typing import Any, TypeVar
 
 from langchain_core.tools import BaseTool
 
+# langgraph is what these tools run under, but it is not a dependency of this package.
+# An empty tuple is a legal `except` target that never matches, so this is inert without it.
+_GRAPH_CONTROL_FLOW: tuple[type[BaseException], ...]
+try:
+    from langgraph.errors import GraphBubbleUp
+
+    _GRAPH_CONTROL_FLOW = (GraphBubbleUp,)
+except ImportError:  # pragma: no cover - exercised by an install without langgraph
+    _GRAPH_CONTROL_FLOW = ()
+
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 1000
@@ -79,6 +89,18 @@ def error_feedback(tool: ToolT) -> ToolT:
     parameter, and a bare ``*args, **kwargs`` wrapper would silently stop that reaching
     the retriever.
 
+    A successful result is returned exactly as the tool produced it. Coercing it to
+    ``str`` would break a tool declaring ``response_format="content_and_artifact"``,
+    which returns a ``(content, artifact)`` pair: stringifying the pair makes LangChain
+    reject it, so a *successful* call would abort the graph — the failure this helper
+    exists to prevent, arriving through the path it was meant to protect.
+
+    LangGraph's control-flow exceptions are re-raised rather than reported. They are
+    ordinary ``Exception`` subclasses, so a tool calling ``interrupt()`` for human
+    approval would otherwise have its pause converted into an error message and the graph
+    would run straight past it. langgraph is not a dependency here, so this is inert when
+    it is absent.
+
     Raises ``TypeError`` for a tool exposing neither callable, since returning it
     unwrapped would reproduce the silent-bypass this exists to prevent.
     """
@@ -102,10 +124,12 @@ def error_feedback(tool: ToolT) -> ToolT:
 
 def _wrap_sync(func: Any, name: str) -> Any:
     @functools.wraps(func)
-    def safe(*args: Any, **kwargs: Any) -> str:
+    def safe(*args: Any, **kwargs: Any) -> Any:
         try:
-            return str(func(*args, **kwargs))
-        except Exception as e:  # nothing may escape to the graph
+            return func(*args, **kwargs)
+        except _GRAPH_CONTROL_FLOW:
+            raise
+        except Exception as e:  # nothing else may escape to the graph
             return _error_payload(e, name)
 
     return safe
@@ -113,10 +137,12 @@ def _wrap_sync(func: Any, name: str) -> Any:
 
 def _wrap_async(coroutine: Any, name: str) -> Any:
     @functools.wraps(coroutine)
-    async def safe(*args: Any, **kwargs: Any) -> str:
+    async def safe(*args: Any, **kwargs: Any) -> Any:
         try:
-            return str(await coroutine(*args, **kwargs))
-        except Exception as e:  # nothing may escape to the graph
+            return await coroutine(*args, **kwargs)
+        except _GRAPH_CONTROL_FLOW:
+            raise
+        except Exception as e:  # nothing else may escape to the graph
             return _error_payload(e, name)
 
     return safe

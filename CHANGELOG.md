@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   async callables are wrapped: LangChain prefers `coroutine` under async, which is how
   `langgraph dev` and a deployed Agent Server run, so wrapping only `func` — as the demo's
   version did — leaves the error handling unused in exactly the environment that needs it.
+  A successful result is passed through untouched, so a tool declaring
+  `response_format="content_and_artifact"` keeps its `(content, artifact)` pair, and LangGraph's
+  control-flow exceptions are re-raised rather than reported, so a tool calling `interrupt()`
+  for human approval still pauses the graph instead of returning its pause as an error.
 - `hotdata_load_managed_table` accepts an `http(s)` URL as well as a local path, downloading it
   and removing the temporary copy afterwards whether or not the load succeeds. A deployed Agent
   Server has no filesystem the requesting user can write to, so a path-only load could ingest

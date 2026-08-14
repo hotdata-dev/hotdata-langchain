@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.tools import BaseTool, StructuredTool, create_retriever_tool
 
@@ -197,6 +198,60 @@ def test_wrapping_keeps_the_callbacks_parameter_reaching_a_retriever_tool() -> N
     for callable_ in (wrapped.func, wrapped.coroutine):
         assert callable_ is not None
         assert "callbacks" in inspect.signature(callable_).parameters
+
+
+def test_an_artifact_tool_survives_a_successful_call() -> None:
+    """Coercing the result to str breaks the tool type the README says to wrap.
+
+    ``response_format="content_and_artifact"`` returns a ``(content, artifact)`` pair.
+    Stringified, LangChain rejects it — so a *successful* call raises, aborting the graph
+    through the very path this helper exists to protect.
+    """
+
+    class Retriever(BaseRetriever):
+        def _get_relevant_documents(self, query: str, **kwargs: Any) -> list[Document]:
+            return [Document("hello")]
+
+    tool = create_retriever_tool(
+        Retriever(), "search_docs", "d" * 50, response_format="content_and_artifact"
+    )
+    call = {"name": "search_docs", "args": {"query": "x"}, "id": "1", "type": "tool_call"}
+    message = error_feedback(tool).invoke(call)
+    assert message.content == "hello"
+    assert [d.page_content for d in message.artifact] == ["hello"]
+
+
+def test_a_non_string_result_is_not_coerced() -> None:
+    """The wrapper reports failures; formatting the result is LangChain's job, not ours."""
+    wrapped = error_feedback(tool_from(func=lambda: {"rows": [1, 2]}))
+    assert wrapped.invoke({}) == {"rows": [1, 2]}
+
+
+def test_a_graph_interrupt_is_not_reported_as_an_error() -> None:
+    """It is a plain Exception, so catching broadly turns a pause into an error message.
+
+    A human-in-the-loop tool would stop interrupting and the graph would run past the
+    approval it was waiting on, with only a nonsense error to show for it.
+    """
+    from langgraph.errors import GraphInterrupt
+
+    def needs_approval() -> str:
+        raise GraphInterrupt(("pause here",))
+
+    wrapped = error_feedback(tool_from(func=needs_approval, name="approve"))
+    with pytest.raises(GraphInterrupt):
+        wrapped.invoke({})
+
+
+async def test_a_graph_interrupt_is_not_reported_as_an_error_under_async() -> None:
+    from langgraph.errors import GraphInterrupt
+
+    async def needs_approval() -> str:
+        raise GraphInterrupt(("pause here",))
+
+    wrapped = error_feedback(tool_from(coroutine=needs_approval, name="approve"))
+    with pytest.raises(GraphInterrupt):
+        await wrapped.ainvoke({})
 
 
 def test_a_tool_with_nothing_to_wrap_is_rejected() -> None:

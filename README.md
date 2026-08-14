@@ -97,6 +97,11 @@ Both `func` and `coroutine` are wrapped. Wrapping only the sync callable is a tr
 prefers `coroutine` under async, which is how `langgraph dev` and a deployed Agent Server run,
 so a sync-only wrapper goes unused in exactly the environment that needs it.
 
+Only failures are touched. A successful result comes back exactly as the tool produced it, so a
+tool declaring `response_format="content_and_artifact"` keeps its pair intact, and LangGraph's
+control-flow exceptions are re-raised — a tool calling `interrupt()` for human approval still
+pauses the graph rather than reporting the pause as an error.
+
 ## Letting the agent discover the schema
 
 `hotdata_describe_tables` is registered by default. Called with no arguments it lists every
