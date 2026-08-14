@@ -24,6 +24,16 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 # traceback from the first call site.
 PY_FLOOR='>=3.11'
 
+# Reported in the failure message. An `a && b || c` chain would run c when either a or b
+# failed, printing both the shell's own "command not found" and the fallback text.
+found_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 --version 2>&1
+  else
+    echo 'no python3'
+  fi
+}
+
 py() {
   if [[ -z "${RELEASE_PY:-}" ]]; then
     if python3 -c 'import tomllib' >/dev/null 2>&1; then
@@ -32,7 +42,7 @@ py() {
       uv run --quiet --no-project --python "$PY_FLOOR" python -c 'import tomllib' >/dev/null 2>&1; then
       RELEASE_PY=uv
     else
-      die "need a python with tomllib (3.11+), or uv to supply one; found $(python3 --version 2>&1 || echo 'no python3')"
+      die "need a python with tomllib (3.11+), or uv to supply one; found $(found_python)"
     fi
   fi
   if [[ "$RELEASE_PY" == system ]]; then
