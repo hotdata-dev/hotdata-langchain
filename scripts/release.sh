@@ -7,6 +7,51 @@ cd "$ROOT"
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 
+# Reading pyproject.toml uses tomllib, which is Python 3.11+, while macOS still ships 3.9
+# as python3. Prefer the system interpreter, else fall back to uv's. Most call sites are
+# command substitutions, so RELEASE_PY only caches within one subshell; the probe is a
+# process spawn, not a resolution the caller has to thread through.
+#
+# The fallback names a version floor. Left unconstrained, `uv run` accepts whatever
+# interpreter it discovers first — measured on a machine with no managed Python and no
+# .venv, that is the same /usr/bin/python3 3.9.6 the probe just rejected, so the fallback
+# would reproduce the error it exists to avoid. A range rather than an exact version, so an
+# existing 3.12 or 3.13 is used rather than downloading a 3.11 alongside it; uv fetches a
+# managed interpreter only when nothing on the machine satisfies the floor.
+#
+# The uv path is probed by importing tomllib through it rather than by assuming it works,
+# so a machine that cannot supply 3.11+ fails here with an actionable message instead of a
+# traceback from the first call site.
+PY_FLOOR='>=3.11'
+
+# Reported in the failure message. An `a && b || c` chain would run c when either a or b
+# failed, printing both the shell's own "command not found" and the fallback text.
+found_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 --version 2>&1
+  else
+    echo 'no python3'
+  fi
+}
+
+py() {
+  if [[ -z "${RELEASE_PY:-}" ]]; then
+    if python3 -c 'import tomllib' >/dev/null 2>&1; then
+      RELEASE_PY=system
+    elif command -v uv >/dev/null 2>&1 &&
+      uv run --quiet --no-project --python "$PY_FLOOR" python -c 'import tomllib' >/dev/null 2>&1; then
+      RELEASE_PY=uv
+    else
+      die "need a python with tomllib (3.11+), or uv to supply one; found $(found_python)"
+    fi
+  fi
+  if [[ "$RELEASE_PY" == system ]]; then
+    python3 "$@"
+  else
+    uv run --quiet --no-project --python "$PY_FLOOR" python "$@"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -24,7 +69,7 @@ EOF
 }
 
 get_version() {
-  python3 - <<'PY'
+  py - <<'PY'
 import tomllib
 from pathlib import Path
 print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
@@ -32,7 +77,7 @@ PY
 }
 
 get_pkg_name() {
-  python3 - <<'PY'
+  py - <<'PY'
 import tomllib
 from pathlib import Path
 print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["name"])
@@ -41,7 +86,7 @@ PY
 
 set_version() {
   local ver="$1"
-  python3 - "$ver" <<'PY'
+  py - "$ver" <<'PY'
 import re, sys
 from pathlib import Path
 ver = sys.argv[1]
@@ -56,7 +101,7 @@ PY
 
 bump_version() {
   local kind="$1" current="$2"
-  python3 - "$kind" "$current" <<'PY'
+  py - "$kind" "$current" <<'PY'
 import re, sys
 kind, current = sys.argv[1], sys.argv[2]
 match = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", current)
@@ -104,14 +149,13 @@ update_changelog() {
   local ver="$1"
   local date
   date="$(date +%Y-%m-%d)"
-  python3 scripts/update_changelog.py "$ver" "$date"
+  py scripts/update_changelog.py "$ver" "$date"
 }
 
 cmd_prepare() {
   local bump="${1:-}"
   [[ -n "$bump" ]] || { usage; die "missing bump kind or explicit version"; }
   need gh
-  need python3
   need uv
   ensure_clean
 
@@ -159,7 +203,6 @@ After merge, run \`./scripts/release.sh publish\` from a clean \`${base}\` check
 
 cmd_publish() {
   need gh
-  need python3
   ensure_clean
 
   local base ver tag
@@ -174,7 +217,7 @@ cmd_publish() {
 
   git rev-parse "$tag" >/dev/null 2>&1 && die "tag $tag already exists"
   [[ -f CHANGELOG.md ]] || die "CHANGELOG.md is required"
-  python3 - "$ver" <<'PY'
+  py - "$ver" <<'PY'
 import re, sys
 from pathlib import Path
 ver = sys.argv[1]
