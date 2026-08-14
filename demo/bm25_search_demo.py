@@ -182,48 +182,6 @@ def print_hits(payload: str, *, query: str) -> None:
         print(f"     {snippet}…")
 
 
-def engine_error_message(exc: BaseException) -> str:
-    """Pull the engine's own message out of a failed call.
-
-    The framework raises ``RuntimeError(e.reason)`` — "Bad Request" — while the useful
-    text ("Invalid function 'to_tsvector'. Did you mean 'to_char'?") stays in the
-    ApiException body further down the ``__cause__`` chain.
-    """
-    node: BaseException | None = exc
-    while node is not None:
-        body = getattr(node, "body", None)
-        if body:
-            try:
-                return str(json.loads(body)["error"]["message"])
-            except (ValueError, KeyError, TypeError):
-                return str(body)[:500]
-        node = node.__cause__
-    return str(exc)
-
-
-def with_error_feedback(tools: list[Any]) -> list[Any]:
-    """Return tools that hand failures back to the model instead of raising.
-
-    An agent that cannot see why a call failed cannot correct it, and an exception
-    out of a tool aborts the whole graph. Arguably belongs in the package itself.
-    """
-
-    def wrap(tool: Any) -> Any:
-        inner = tool.func
-
-        def safe(*args: Any, **kwargs: Any) -> str:
-            try:
-                return str(inner(*args, **kwargs))
-            except Exception as e:
-                message = engine_error_message(e)
-                print(f"  [tool error fed back to the model] {message[:120]}")
-                return json.dumps({"error": message})
-
-        return tool.model_copy(update={"func": safe})
-
-    return [wrap(t) for t in tools]
-
-
 def run_agent(tools: list[Any], *, model: str) -> None:
     from langchain.agents import create_agent
 
@@ -234,7 +192,10 @@ def run_agent(tools: list[Any], *, model: str) -> None:
 
     agent = create_agent(
         model=model,
-        tools=with_error_feedback(tools),
+        # A raising tool aborts the whole graph, so the model never sees why its query was
+        # rejected. This hands it the engine's own message instead, which it can correct
+        # against on the next turn.
+        tools=hl.with_error_feedback(tools),
         # Role only. Which tool to reach for, and the engine's constraints, come from
         # the tool descriptions themselves — an app should not have to teach the model
         # how the query engine behaves.

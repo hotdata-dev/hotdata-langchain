@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `make_hotdata_tools(..., handle_errors=True)` returns each tool's failures as
+  `{"error": "<engine message>"}` instead of raising. An exception out of a tool aborts the
+  whole LangGraph run, so one invalid query ended the conversation rather than costing a turn,
+  and neither obvious escape hatch applies: `create_agent` does not accept a `ToolNode`, and
+  `BaseTool.handle_tool_error` only catches `ToolException` while these raise `RuntimeError`.
+  Off by default — outside an agent loop, raising is still right ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)).
+- `engine_error_message(exc)` and `with_error_feedback(tools)` are public. The framework raises
+  `RuntimeError("Bad Request")` while the message the model can act on
+  (`Invalid function 'date_sub'. Did you mean 'date_bin'?`) sits in the API response body
+  further down the exception chain; a deployed agent recovered from two invalid queries in one
+  turn each purely because it could read those. `with_error_feedback` applies the wrapping to
+  tools built elsewhere, such as a retriever tool registered alongside these. Both the sync and
+  async callables are wrapped: LangChain prefers `coroutine` under async, which is how
+  `langgraph dev` and a deployed Agent Server run, so wrapping only `func` — as the demo's
+  version did — leaves the error handling unused in exactly the environment that needs it.
+- `hotdata_load_managed_table` accepts an `http(s)` URL as well as a local path, downloading it
+  and removing the temporary copy afterwards whether or not the load succeeds. A deployed Agent
+  Server has no filesystem the requesting user can write to, so a path-only load could ingest
+  nothing the process did not already hold. A URL that answers 200 with an HTML login or error
+  page is rejected on parquet's magic bytes before anything is uploaded, and a missing local
+  path now says what forms are accepted instead of raising a bare `FileNotFoundError`.
+  `hotdata_langchain.databases.fetch_parquet` exposes the download on its own.
+- `management_tools=False` on `make_hotdata_tools` leaves out the three managed-database tools,
+  for an agent scoped to one fixed database that cannot use them. Not called `read_only`:
+  listing databases is itself a read, so what it removes is the managed-database workflow
+  rather than everything that writes.
+- A name constant per tool — `DEFAULT_SQL_TOOL_NAME`, `DEFAULT_LIST_DATABASES_TOOL_NAME`,
+  `DEFAULT_CREATE_DATABASE_TOOL_NAME`, `DEFAULT_LOAD_TABLE_TOOL_NAME` — joining the two that
+  were already exported. Selecting a subset of the tools meant hardcoding the strings.
+
 
 ## [0.7.0] - 2026-08-13
 

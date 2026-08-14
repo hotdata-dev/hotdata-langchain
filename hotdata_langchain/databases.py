@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import tempfile
 from typing import Any
+from urllib.request import Request, urlopen
 
 from hotdata.api.databases_api import DatabasesApi
 from hotdata.exceptions import ApiException
@@ -22,6 +26,11 @@ CATALOG_QUERY = (
     "SELECT DISTINCT table_catalog FROM information_schema.tables "
     "WHERE table_schema <> 'information_schema'"
 )
+
+URL_SCHEMES = ("http://", "https://")
+PARQUET_MAGIC = b"PAR1"
+FETCH_TIMEOUT_SECONDS = 30.0
+FETCH_USER_AGENT = "hotdata-langchain"
 
 
 def resolve_database_by_id(
@@ -122,6 +131,50 @@ def create_managed_database(
     return client.create_managed_database(description=name, schema=schema, tables=tables)
 
 
+def is_url(file: str) -> bool:
+    return file.lower().startswith(URL_SCHEMES)
+
+
+def fetch_parquet(url: str, *, timeout: float = FETCH_TIMEOUT_SECONDS) -> str:
+    """Download a parquet file to a temporary path and return that path.
+
+    The caller is responsible for deleting it.
+
+    Fetched here rather than server-side, so a caller-supplied URL is read inside the
+    agent's own trust boundary rather than the workspace's — an engine that fetched URLs
+    on request would reach whatever its network can see.
+
+    A ``User-Agent`` is set because asset hosts reject urllib's default with 403, which
+    the demo hit and worked around by hand. The download is checked for parquet's ``PAR1``
+    magic before it goes anywhere: a URL that answers 200 with an HTML error page would
+    otherwise be uploaded and fail as a load, several steps from the cause.
+
+    Raises ``ValueError`` for a non-HTTP URL — this is not a general file fetcher, and
+    ``urlopen`` would otherwise honour ``file://``.
+    """
+    if not is_url(url):
+        raise ValueError(f"expected an http:// or https:// URL, got {url!r}")
+
+    request = Request(url, headers={"User-Agent": FETCH_USER_AGENT})  # the scheme is checked above
+    handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)  # noqa: SIM115
+    try:
+        with urlopen(request, timeout=timeout) as response:  # the scheme is checked above
+            shutil.copyfileobj(response, handle)
+        handle.close()
+        with open(handle.name, "rb") as downloaded:
+            if downloaded.read(len(PARQUET_MAGIC)) != PARQUET_MAGIC:
+                raise ValueError(
+                    f"{url!r} did not return a parquet file: it does not begin with "
+                    f"{PARQUET_MAGIC.decode()}. A URL that redirects to a login or error "
+                    "page answers 200 with HTML, which looks like a successful download."
+                )
+    except BaseException:
+        handle.close()
+        os.unlink(handle.name)
+        raise
+    return handle.name
+
+
 def load_managed_table(
     client: HotdataClient,
     *,
@@ -130,7 +183,13 @@ def load_managed_table(
     file: str,
     schema: str = DEFAULT_SCHEMA,
 ) -> LoadManagedTableResult:
-    """Load a local parquet file into a declared table of the database with that id.
+    """Load a parquet file into a declared table of the database with that id.
+
+    ``file`` is a local path or an ``http(s)`` URL. A URL is downloaded here and uploaded
+    from the temporary copy, which is removed afterwards whether or not the load succeeds.
+    URLs are what makes this reachable from a deployed agent at all: an Agent Server has
+    no filesystem the requesting user can put a file on, so a path-only load can ingest
+    nothing the process did not already hold.
 
     ``database_id`` is resolved by id (see :func:`resolve_database_by_id`) and the
     resolved record is what addresses the load, so a display label never selects the
@@ -138,6 +197,17 @@ def load_managed_table(
     unambiguously matters.
     """
     database = resolve_database_by_id(client, database_id)
+    if is_url(file):
+        path = fetch_parquet(file)
+        try:
+            return client.load_managed_table(database, table, schema=schema, file=path)
+        finally:
+            os.unlink(path)
+    if not os.path.isfile(file):
+        raise FileNotFoundError(
+            f"no file at {file!r}. Pass a path to a local parquet file, or an http:// or "
+            "https:// URL to one — other formats are not accepted."
+        )
     return client.load_managed_table(database, table, schema=schema, file=file)
 
 

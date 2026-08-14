@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from hotdata_framework import ManagedDatabase, QueryResult
+
+
+@pytest.fixture
+def parquet_file(tmp_path: Path) -> Path:
+    """A real parquet file on disk, so a load reads real magic bytes rather than a stub."""
+    path = tmp_path / "orders.parquet"
+    pq.write_table(pa.table({"id": [1, 2, 3], "label": ["a", "b", "c"]}), path)
+    return path
+
+
+def fake_response(payload: bytes) -> io.BytesIO:
+    """What ``urlopen`` returns, as far as a streaming download is concerned."""
+    return io.BytesIO(payload)
 
 
 @pytest.fixture

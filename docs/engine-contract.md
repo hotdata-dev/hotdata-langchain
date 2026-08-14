@@ -250,6 +250,11 @@ the `__cause__` chain. This is not cosmetic: an agent shown `"Bad Request"` cann
 itself, while the real text (`Invalid function 'to_tsvector'…`) is directly actionable. See the
 cross-repo list in [`ai-native-layer-roadmap.md`](./ai-native-layer-roadmap.md).
 
+`hl.engine_error_message(exc)` walks that chain and returns the engine's text, and
+`make_hotdata_tools(handle_errors=True)` hands it to the model instead of raising. That is a
+recovery, not a fix — the framework surfacing its own message is tracked as `sdk-python`#36, and
+until it lands every consumer either uses this or sees `"Bad Request"`.
+
 ## What an agent does without guidance
 
 Both observed with a small tool-calling model and the tools from `make_hotdata_tools`:
