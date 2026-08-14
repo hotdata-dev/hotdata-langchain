@@ -11,20 +11,34 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 # as python3. Prefer the system interpreter, else fall back to uv's. Most call sites are
 # command substitutions, so RELEASE_PY only caches within one subshell; the probe is a
 # process spawn, not a resolution the caller has to thread through.
+#
+# The fallback names a version floor. Left unconstrained, `uv run` accepts whatever
+# interpreter it discovers first — measured on a machine with no managed Python and no
+# .venv, that is the same /usr/bin/python3 3.9.6 the probe just rejected, so the fallback
+# would reproduce the error it exists to avoid. A range rather than an exact version, so an
+# existing 3.12 or 3.13 is used rather than downloading a 3.11 alongside it; uv fetches a
+# managed interpreter only when nothing on the machine satisfies the floor.
+#
+# The uv path is probed by importing tomllib through it rather than by assuming it works,
+# so a machine that cannot supply 3.11+ fails here with an actionable message instead of a
+# traceback from the first call site.
+PY_FLOOR='>=3.11'
+
 py() {
   if [[ -z "${RELEASE_PY:-}" ]]; then
     if python3 -c 'import tomllib' >/dev/null 2>&1; then
       RELEASE_PY=system
-    elif command -v uv >/dev/null 2>&1; then
+    elif command -v uv >/dev/null 2>&1 &&
+      uv run --quiet --no-project --python "$PY_FLOOR" python -c 'import tomllib' >/dev/null 2>&1; then
       RELEASE_PY=uv
     else
-      die "python3 is too old for tomllib (need 3.11+); install uv or a newer python3"
+      die "need a python with tomllib (3.11+), or uv to supply one; found $(python3 --version 2>&1 || echo 'no python3')"
     fi
   fi
   if [[ "$RELEASE_PY" == system ]]; then
     python3 "$@"
   else
-    uv run --quiet --no-project python "$@"
+    uv run --quiet --no-project --python "$PY_FLOOR" python "$@"
   fi
 }
 
