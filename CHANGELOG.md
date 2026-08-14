@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page is rejected on parquet's magic bytes before anything is uploaded, and a missing local
   path now says what forms are accepted instead of raising a bare `FileNotFoundError`.
   `hotdata_langchain.databases.fetch_parquet` exposes the download on its own.
+- The URL fetch refuses an address that is not publicly routable, and caps the download at
+  1 GiB. The URL is chosen by the model, and a model's inputs include whatever text it
+  retrieved, so an instruction planted in a document is enough to pick one — without the check
+  the agent process is a fetcher for whatever its own network can see, including a cloud
+  metadata endpoint, and a load completes the loop by landing the response in a table the agent
+  can then read. Every resolved address is checked, and again on each redirect, since a public
+  URL that 302s to a private one is the standard bypass. `allow_private_hosts=True` on
+  `make_hotdata_tools`, `load_managed_table` and `fetch_parquet` lifts it for a deployment whose
+  data really is on an internal host; `max_bytes` on `fetch_parquet` raises the size cap. This
+  narrows the reachable surface rather than sealing it — the address is resolved twice, so a DNS
+  server that answers differently each time can still get through.
 - `management_tools=False` on `make_hotdata_tools` leaves out the three managed-database tools,
   for an agent scoped to one fixed database that cannot use them. Not called `read_only`:
   listing databases is itself a read, so what it removes is the managed-database workflow

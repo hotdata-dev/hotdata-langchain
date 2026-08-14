@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import socket
 import tempfile
 from pathlib import Path
+from urllib.request import Request
 
 import pytest
 from hotdata_framework import LoadManagedTableResult, ManagedDatabase
 
 from hotdata_langchain.databases import (
+    _ValidatingRedirectHandler,
     create_managed_database,
     fetch_parquet,
     list_managed_databases_json,
@@ -24,7 +27,7 @@ from hotdata_langchain.tools import (
     make_hotdata_tools,
     result_rows_for_llm,
 )
-from tests.conftest import fake_response
+from tests.conftest import FakeOpener
 
 
 def test_result_rows_for_llm(sample_result):
@@ -103,7 +106,7 @@ def test_load_managed_table_rejects_a_path_that_is_not_there(mock_client, manage
     mock_client.load_managed_table.assert_not_called()
 
 
-def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file, monkeypatch):
+def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file, serve):
     """The only ingest route open to a deployed agent, which has no filesystem of its own."""
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id="c1",
@@ -112,10 +115,7 @@ def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file,
         row_count=3,
         full_name="sales.public.orders",
     )
-    monkeypatch.setattr(
-        "hotdata_langchain.databases.urlopen",
-        lambda request, timeout: fake_response(parquet_file.read_bytes()),
-    )
+    serve(parquet_file.read_bytes())
     loaded = load_managed_table(
         mock_client,
         database_id=managed_db,
@@ -128,13 +128,10 @@ def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file,
 
 
 def test_the_downloaded_copy_is_removed_after_the_load(
-    mock_client, managed_db, parquet_file, monkeypatch
+    mock_client, managed_db, parquet_file, serve
 ):
     """A tool an agent calls in a loop must not leave a file behind on every call."""
-    monkeypatch.setattr(
-        "hotdata_langchain.databases.urlopen",
-        lambda request, timeout: fake_response(parquet_file.read_bytes()),
-    )
+    serve(parquet_file.read_bytes())
     load_managed_table(
         mock_client,
         database_id=managed_db,
@@ -145,13 +142,10 @@ def test_the_downloaded_copy_is_removed_after_the_load(
 
 
 def test_the_downloaded_copy_is_removed_when_the_load_fails(
-    mock_client, managed_db, parquet_file, monkeypatch
+    mock_client, managed_db, parquet_file, serve
 ):
     mock_client.load_managed_table.side_effect = RuntimeError("Bad Request")
-    monkeypatch.setattr(
-        "hotdata_langchain.databases.urlopen",
-        lambda request, timeout: fake_response(parquet_file.read_bytes()),
-    )
+    serve(parquet_file.read_bytes())
     with pytest.raises(RuntimeError):
         load_managed_table(
             mock_client,
@@ -162,17 +156,14 @@ def test_the_downloaded_copy_is_removed_when_the_load_fails(
     assert not Path(mock_client.load_managed_table.call_args.kwargs["file"]).exists()
 
 
-def test_a_url_that_returns_a_login_page_is_rejected_before_upload(monkeypatch):
+def test_a_url_that_returns_a_login_page_is_rejected_before_upload(serve):
     """It answers 200 with HTML, so nothing before the magic-byte check notices."""
-    monkeypatch.setattr(
-        "hotdata_langchain.databases.urlopen",
-        lambda request, timeout: fake_response(b"<html>sign in</html>"),
-    )
+    serve(b"<html>sign in</html>")
     with pytest.raises(ValueError, match="did not return a parquet file"):
         fetch_parquet("https://example.test/orders.parquet")
 
 
-def test_a_failed_fetch_leaves_no_temporary_file(monkeypatch):
+def test_a_failed_fetch_leaves_no_temporary_file(serve, monkeypatch):
     created: list[str] = []
     real_named_temp = tempfile.NamedTemporaryFile
 
@@ -182,10 +173,7 @@ def test_a_failed_fetch_leaves_no_temporary_file(monkeypatch):
         return handle
 
     monkeypatch.setattr("hotdata_langchain.databases.tempfile.NamedTemporaryFile", record)
-    monkeypatch.setattr(
-        "hotdata_langchain.databases.urlopen",
-        lambda request, timeout: fake_response(b"<html>sign in</html>"),
-    )
+    serve(b"<html>sign in</html>")
     with pytest.raises(ValueError, match="did not return a parquet file"):
         fetch_parquet("https://example.test/orders.parquet")
     assert created and not any(Path(name).exists() for name in created)
@@ -197,18 +185,119 @@ def test_fetch_parquet_refuses_a_non_http_url():
         fetch_parquet("file:///etc/passwd")
 
 
-def test_the_fetch_sets_a_user_agent(monkeypatch, parquet_file):
+def test_the_fetch_sets_a_user_agent(serve, parquet_file):
     """Asset hosts 403 urllib's default, which the demo hit and worked around by hand."""
-    seen: dict[str, str] = {}
+    opener = serve(parquet_file.read_bytes())
+    Path(fetch_parquet("https://example.test/orders.parquet")).unlink()
+    assert opener.requests[0].headers.get("User-agent") == "hotdata-langchain"
 
-    def capture(request, timeout):
-        seen.update(request.headers)
-        return fake_response(parquet_file.read_bytes())
 
-    monkeypatch.setattr("hotdata_langchain.databases.urlopen", capture)
-    path = fetch_parquet("https://example.test/orders.parquet")
+# The URL is chosen by the model, and the model's inputs include text it retrieved, so a
+# planted link is enough to pick one. These pin that the fetch cannot be steered inwards.
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["169.254.169.254", "127.0.0.1", "10.0.0.1", "192.168.1.5", "::1", "::ffff:127.0.0.1"],
+)
+def test_a_url_resolving_to_a_private_address_is_refused(address, monkeypatch):
+    """A cloud metadata endpoint and an internal service are both one planted link away."""
+    monkeypatch.setattr(
+        "hotdata_langchain.databases.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", (address, 0))],
+    )
+    with pytest.raises(ValueError, match="not a public address"):
+        fetch_parquet("https://internal.test/orders.parquet")
+
+
+def test_every_resolved_address_is_checked_not_just_the_first(monkeypatch):
+    """A host answering with one public and one private address must not pass on the public one."""
+    monkeypatch.setattr(
+        "hotdata_langchain.databases.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", ("93.184.216.34", 0)), (0, 0, 0, "", ("10.0.0.1", 0))],
+    )
+    with pytest.raises(ValueError, match="not a public address"):
+        fetch_parquet("https://split.test/orders.parquet")
+
+
+def test_a_private_host_is_allowed_when_the_deployment_says_so(monkeypatch, parquet_file):
+    """Loading from an internal store is legitimate; it just has to be chosen deliberately."""
+    monkeypatch.setattr(
+        "hotdata_langchain.databases.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", ("10.0.0.1", 0))],
+    )
+    opener = FakeOpener(parquet_file.read_bytes(), {})
+    monkeypatch.setattr("hotdata_langchain.databases.build_opener", lambda *h: opener)
+    path = fetch_parquet("https://minio.internal/orders.parquet", allow_private_hosts=True)
     Path(path).unlink()
-    assert seen.get("User-agent") == "hotdata-langchain"
+
+
+def test_a_redirect_to_a_private_address_is_refused(monkeypatch):
+    """Checking only the URL as written is defeated by a public URL that 302s inwards."""
+    resolved = {"public.test": "93.184.216.34", "internal.test": "169.254.169.254"}
+    monkeypatch.setattr(
+        "hotdata_langchain.databases.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", (resolved[host], 0))],
+    )
+    handler = _ValidatingRedirectHandler(allow_private_hosts=False)
+    with pytest.raises(ValueError, match="not a public address"):
+        handler.redirect_request(
+            Request("https://public.test/orders.parquet"),
+            None,
+            302,
+            "Found",
+            {},
+            "https://internal.test/latest/meta-data/",
+        )
+
+
+def test_an_unresolvable_host_says_so(monkeypatch):
+    def explode(host, port):
+        raise socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr("hotdata_langchain.databases.socket.getaddrinfo", explode)
+    with pytest.raises(ValueError, match="could not resolve"):
+        fetch_parquet("https://nowhere.test/orders.parquet")
+
+
+def test_an_oversized_download_is_refused_from_the_declared_length(serve):
+    """Declared up front, so the transfer never starts."""
+    opener = serve(b"PAR1" + b"x" * 100, {"Content-Length": str(10 * 1024**3)})
+    with pytest.raises(ValueError, match=r"over the \d+-byte limit"):
+        fetch_parquet("https://example.test/huge.parquet")
+    assert opener.requests, "the request was made, and the body was never read"
+
+
+def test_an_oversized_download_is_refused_while_streaming(serve):
+    """Content-Length is optional and can lie, so the bytes are counted regardless."""
+    serve(b"PAR1" + b"x" * 5000)
+    with pytest.raises(ValueError, match="over the 1024-byte limit"):
+        fetch_parquet("https://example.test/huge.parquet", max_bytes=1024)
+
+
+def test_an_oversized_download_leaves_no_temporary_file(serve, monkeypatch):
+    """The point of the cap is the disk, so a refusal that kept the bytes would defeat it."""
+    created: list[str] = []
+    real_named_temp = tempfile.NamedTemporaryFile
+
+    def record(*args, **kwargs):
+        handle = real_named_temp(*args, **kwargs)
+        created.append(handle.name)
+        return handle
+
+    monkeypatch.setattr("hotdata_langchain.databases.tempfile.NamedTemporaryFile", record)
+    serve(b"PAR1" + b"x" * 5000)
+    with pytest.raises(ValueError, match="over the"):
+        fetch_parquet("https://example.test/huge.parquet", max_bytes=1024)
+    assert created and not any(Path(name).exists() for name in created)
+
+
+def test_a_file_inside_the_cap_is_kept(serve, parquet_file):
+    payload = parquet_file.read_bytes()
+    serve(payload, {"Content-Length": str(len(payload))})
+    path = fetch_parquet("https://example.test/orders.parquet", max_bytes=len(payload))
+    assert Path(path).read_bytes() == payload
+    Path(path).unlink()
 
 
 def test_make_hotdata_tools(mock_client, sample_result, managed_db, databases_api, parquet_file):

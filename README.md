@@ -143,6 +143,25 @@ has no filesystem the requesting user can put a file on, so a path-only load can
 the process did not already hold. Only parquet is accepted, and a URL that answers 200 with an
 HTML login or error page is rejected before anything is uploaded.
 
+Two limits apply, because the URL is chosen by the model and a model's inputs include whatever
+text it retrieved — an instruction planted in a document is enough to pick one:
+
+- **It must resolve to a public address.** Otherwise the agent process becomes a fetcher for
+  whatever its own network can see, which in a deployment is usually more than the public
+  internet: a cloud metadata endpoint on `169.254.169.254`, an internal service on a private
+  range. A load completes the loop, since an internal URL serving parquet would land in the
+  workspace and be readable from SQL on the next turn. Every address the host resolves to is
+  checked, and again on each redirect — a public URL that 302s inwards is the standard bypass.
+  Pass `allow_private_hosts=True` to `make_hotdata_tools` when your data genuinely sits on an
+  internal host.
+- **It is capped at 1 GiB.** `Content-Length` is checked first, so an oversized file is usually
+  refused before any of it transfers, and the stream is counted as well because that header is
+  optional and can lie. `hl.databases.fetch_parquet(..., max_bytes=...)` raises the cap.
+
+This narrows what the fetch can reach rather than sealing it: the address is resolved for the
+check and again by the HTTP client, so a DNS server answering differently each time can still
+get through. A deployment on an untrusted network wants an egress proxy in front of this.
+
 ## Full-text search
 
 Point the agent at a text column carrying a BM25 index and it gets a search tool alongside SQL:

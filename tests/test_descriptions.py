@@ -232,3 +232,15 @@ def test_load_description_no_longer_rules_out_urls() -> None:
     description = descriptions()["hotdata_load_managed_table"].lower()
     assert "not urls" not in description
     assert "only local parquet paths" not in description
+
+
+def test_load_description_states_that_a_url_must_be_public() -> None:
+    """Otherwise the model spends a turn discovering the rule from a rejection."""
+    description = descriptions()["hotdata_load_managed_table"]
+    assert "not an internal address" in description
+
+
+def test_load_description_drops_the_public_url_rule_when_it_does_not_apply() -> None:
+    """A deployment loading from an internal store would be told the opposite of the truth."""
+    description = descriptions(allow_private_hosts=True)["hotdata_load_managed_table"]
+    assert "not an internal address" not in description

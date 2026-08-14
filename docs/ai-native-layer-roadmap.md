@@ -181,7 +181,9 @@ Grouped by code surface:
   package API, `make_hotdata_tools(handle_errors=True)` turns the wrapping on, and both the
   sync and async callables are wrapped — the async one is what LangChain actually calls in a
   deployed agent, and the demo's version missed it. `hotdata_load_managed_table` now accepts a
-  URL, which is the only ingest route open to an agent with no filesystem of its own. Also
+  URL, which is the only ingest route open to an agent with no filesystem of its own — bounded
+  by a public-address check and a size cap, since the URL is model-chosen and therefore
+  reachable by a planted instruction. Also
   added a name constant per tool and `management_tools=False`, so an application selecting a
   subset stops hardcoding strings.
 

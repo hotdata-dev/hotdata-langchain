@@ -20,9 +20,49 @@ def parquet_file(tmp_path: Path) -> Path:
     return path
 
 
-def fake_response(payload: bytes) -> io.BytesIO:
-    """What ``urlopen`` returns, as far as a streaming download is concerned."""
-    return io.BytesIO(payload)
+class FakeResponse(io.BytesIO):
+    """What an opener returns, as far as a streaming download is concerned."""
+
+    def __init__(self, payload: bytes, headers: dict[str, str]) -> None:
+        super().__init__(payload)
+        self.headers = headers
+
+
+class FakeOpener:
+    def __init__(self, payload: bytes, headers: dict[str, str]) -> None:
+        self._payload = payload
+        self._headers = headers
+        self.requests: list[object] = []
+
+    def open(self, request: object, timeout: float | None = None) -> FakeResponse:
+        self.requests.append(request)
+        return FakeResponse(self._payload, self._headers)
+
+
+@pytest.fixture
+def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every host to a public address.
+
+    The download tests are about what happens to the bytes, not about DNS, and a test
+    that really resolved a name would depend on the network. Tests covering the address
+    check itself set their own resolution.
+    """
+    monkeypatch.setattr(
+        "hotdata_langchain.databases.socket.getaddrinfo",
+        lambda host, port: [(0, 0, 0, "", ("93.184.216.34", 0))],
+    )
+
+
+@pytest.fixture
+def serve(monkeypatch: pytest.MonkeyPatch, public_dns: None):
+    """Answer the next fetch with this payload, and hand back the opener that saw it."""
+
+    def _serve(payload: bytes, headers: dict[str, str] | None = None) -> FakeOpener:
+        opener = FakeOpener(payload, headers or {})
+        monkeypatch.setattr("hotdata_langchain.databases.build_opener", lambda *handlers: opener)
+        return opener
+
+    return _serve
 
 
 @pytest.fixture

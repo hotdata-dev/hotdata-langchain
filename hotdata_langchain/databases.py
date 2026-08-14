@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
-import os
-import shutil
+import socket
 import tempfile
+from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from hotdata.api.databases_api import DatabasesApi
 from hotdata.exceptions import ApiException
@@ -31,6 +33,8 @@ URL_SCHEMES = ("http://", "https://")
 PARQUET_MAGIC = b"PAR1"
 FETCH_TIMEOUT_SECONDS = 30.0
 FETCH_USER_AGENT = "hotdata-langchain"
+MAX_DOWNLOAD_BYTES = 1024**3
+DOWNLOAD_CHUNK_BYTES = 1024 * 256
 
 
 def resolve_database_by_id(
@@ -135,31 +139,110 @@ def is_url(file: str) -> bool:
     return file.lower().startswith(URL_SCHEMES)
 
 
-def fetch_parquet(url: str, *, timeout: float = FETCH_TIMEOUT_SECONDS) -> str:
+def reject_unroutable_url(url: str, *, allow_private_hosts: bool = False) -> None:
+    """Raise unless ``url`` is an HTTP(S) URL resolving to a publicly routable address.
+
+    The URL reaching :func:`fetch_parquet` is chosen by the model, and a model's inputs
+    include whatever text it retrieved — so an instruction planted in a document is enough
+    to pick one. Without this check the agent process becomes a fetcher for whatever its
+    own network can see, which in a deployment is usually more than the public internet:
+    a cloud metadata endpoint on 169.254.169.254, an internal service on a private range.
+    Blocked because a load completes the loop: an internal URL serving parquet would be
+    uploaded into the workspace and readable from SQL on the next turn.
+
+    Every address the host resolves to is checked, not just the first, and the caller
+    re-runs this on each redirect hop — validating only the URL as written is defeated by
+    a public URL that 302s to a private one.
+
+    ``allow_private_hosts`` turns the check off, for a deployment whose data genuinely
+    sits on an internal host. It is off by default because the safe direction is the one
+    that fails loudly.
+
+    This narrows the reachable surface rather than sealing it. The address is resolved
+    here and again by ``urlopen``, so a DNS server that answers differently each time can
+    still get through; a deployment on a hostile network wants an egress proxy, not this.
+    """
+    if not is_url(url):
+        raise ValueError(f"expected an http:// or https:// URL, got {url!r}")
+    if allow_private_hosts:
+        return
+
+    host = urlsplit(url).hostname
+    if not host:
+        raise ValueError(f"no host in {url!r}")
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except socket.gaierror as e:
+        raise ValueError(f"could not resolve {host!r} from {url!r}: {e}") from e
+
+    for address in sorted(addresses):
+        if not ipaddress.ip_address(address).is_global:
+            raise ValueError(
+                f"{url!r} resolves to {address}, which is not a public address. Loading "
+                "from an internal host would let a URL chosen by the model reach a "
+                "service only this process can see. Pass allow_private_hosts=True if "
+                "that host is genuinely where your data lives."
+            )
+
+
+class _ValidatingRedirectHandler(HTTPRedirectHandler):
+    """Re-checks every redirect target, since the first URL is not the one fetched."""
+
+    def __init__(self, *, allow_private_hosts: bool) -> None:
+        self._allow_private_hosts = allow_private_hosts
+
+    def redirect_request(  # the signature is urllib's
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Request | None:
+        reject_unroutable_url(newurl, allow_private_hosts=self._allow_private_hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch_parquet(
+    url: str,
+    *,
+    timeout: float = FETCH_TIMEOUT_SECONDS,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
+    allow_private_hosts: bool = False,
+) -> str:
     """Download a parquet file to a temporary path and return that path.
 
     The caller is responsible for deleting it.
 
-    Fetched here rather than server-side, so a caller-supplied URL is read inside the
-    agent's own trust boundary rather than the workspace's — an engine that fetched URLs
-    on request would reach whatever its network can see.
+    Fetched here rather than server-side, so the request carries the agent's network
+    position rather than the workspace's. That is the narrower blast radius of the two,
+    not a safe one — see :func:`reject_unroutable_url`, which is what bounds it, and which
+    also runs on every redirect hop.
+
+    ``max_bytes`` caps the download. An agent that follows a planted link, or simply
+    mistakes one large file for another, would otherwise fill the disk of a process it
+    shares with every other request. ``Content-Length`` is checked first when the server
+    sends one, so an oversized file is usually refused before any of it is transferred,
+    and the stream is counted regardless because that header is optional and can lie.
 
     A ``User-Agent`` is set because asset hosts reject urllib's default with 403, which
     the demo hit and worked around by hand. The download is checked for parquet's ``PAR1``
     magic before it goes anywhere: a URL that answers 200 with an HTML error page would
     otherwise be uploaded and fail as a load, several steps from the cause.
 
-    Raises ``ValueError`` for a non-HTTP URL — this is not a general file fetcher, and
-    ``urlopen`` would otherwise honour ``file://``.
+    Raises ``ValueError`` for a URL that is not HTTP(S), resolves to a private address, or
+    returns something too large or not parquet.
     """
-    if not is_url(url):
-        raise ValueError(f"expected an http:// or https:// URL, got {url!r}")
+    reject_unroutable_url(url, allow_private_hosts=allow_private_hosts)
 
-    request = Request(url, headers={"User-Agent": FETCH_USER_AGENT})  # the scheme is checked above
+    opener = build_opener(_ValidatingRedirectHandler(allow_private_hosts=allow_private_hosts))
+    request = Request(url, headers={"User-Agent": FETCH_USER_AGENT})  # the scheme is checked
     handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)  # noqa: SIM115
     try:
-        with urlopen(request, timeout=timeout) as response:  # the scheme is checked above
-            shutil.copyfileobj(response, handle)
+        with opener.open(request, timeout=timeout) as response:
+            _reject_oversized_header(response, url=url, max_bytes=max_bytes)
+            _copy_capped(response, handle, url=url, max_bytes=max_bytes)
         handle.close()
         with open(handle.name, "rb") as downloaded:
             if downloaded.read(len(PARQUET_MAGIC)) != PARQUET_MAGIC:
@@ -170,9 +253,40 @@ def fetch_parquet(url: str, *, timeout: float = FETCH_TIMEOUT_SECONDS) -> str:
                 )
     except BaseException:
         handle.close()
-        os.unlink(handle.name)
+        Path(handle.name).unlink(missing_ok=True)
         raise
     return handle.name
+
+
+def _reject_oversized_header(response: Any, *, url: str, max_bytes: int) -> None:
+    """Refuse before transferring anything, when the server declares the size."""
+    declared = response.headers.get("Content-Length")
+    if declared is None:
+        return
+    try:
+        length = int(declared)
+    except ValueError:
+        return
+    if length > max_bytes:
+        raise ValueError(_too_large(url, length, max_bytes))
+
+
+def _copy_capped(response: Any, handle: Any, *, url: str, max_bytes: int) -> None:
+    written = 0
+    while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+        written += len(chunk)
+        if written > max_bytes:
+            raise ValueError(_too_large(url, None, max_bytes))
+        handle.write(chunk)
+
+
+def _too_large(url: str, length: int | None, max_bytes: int) -> str:
+    size = f"{length} bytes" if length is not None else f"more than {max_bytes} bytes"
+    return (
+        f"{url!r} is {size}, over the {max_bytes}-byte limit. Raise max_bytes if the file "
+        "is genuinely this large; the cap is there so one download cannot fill the disk of "
+        "a long-running agent process."
+    )
 
 
 def load_managed_table(
@@ -182,6 +296,7 @@ def load_managed_table(
     table: str,
     file: str,
     schema: str = DEFAULT_SCHEMA,
+    allow_private_hosts: bool = False,
 ) -> LoadManagedTableResult:
     """Load a parquet file into a declared table of the database with that id.
 
@@ -189,7 +304,9 @@ def load_managed_table(
     from the temporary copy, which is removed afterwards whether or not the load succeeds.
     URLs are what makes this reachable from a deployed agent at all: an Agent Server has
     no filesystem the requesting user can put a file on, so a path-only load can ingest
-    nothing the process did not already hold.
+    nothing the process did not already hold. It is fetched under the limits described on
+    :func:`fetch_parquet`; ``allow_private_hosts`` lifts the one that would refuse an
+    internal host.
 
     ``database_id`` is resolved by id (see :func:`resolve_database_by_id`) and the
     resolved record is what addresses the load, so a display label never selects the
@@ -198,12 +315,12 @@ def load_managed_table(
     """
     database = resolve_database_by_id(client, database_id)
     if is_url(file):
-        path = fetch_parquet(file)
+        path = fetch_parquet(file, allow_private_hosts=allow_private_hosts)
         try:
             return client.load_managed_table(database, table, schema=schema, file=path)
         finally:
-            os.unlink(path)
-    if not os.path.isfile(file):
+            Path(path).unlink(missing_ok=True)
+    if not Path(file).is_file():
         raise FileNotFoundError(
             f"no file at {file!r}. Pass a path to a local parquet file, or an http:// or "
             "https:// URL to one — other formats are not accepted."

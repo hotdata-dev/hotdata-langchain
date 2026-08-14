@@ -202,6 +202,7 @@ def make_hotdata_tools(
     describe_tables: bool = True,
     management_tools: bool = True,
     handle_errors: bool = False,
+    allow_private_hosts: bool = False,
     catalog: str | None = None,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and managed database workflows.
@@ -230,6 +231,12 @@ def make_hotdata_tools(
     thin pass-throughs outside an agent loop and swallowing an exception there would hide
     a real failure. See :func:`hotdata_langchain.errors.with_error_feedback` to apply the
     same wrapping to tools built elsewhere.
+
+    ``allow_private_hosts`` lets the load tool fetch a URL resolving to a private address.
+    Off by default: the URL is chosen by the model, and the model's inputs include text it
+    retrieved, so the default must not let a planted link reach a service only this process
+    can see. Turn it on when the data genuinely sits on an internal host. See
+    :func:`hotdata_langchain.databases.reject_unroutable_url`.
 
     Passing both ``search_table`` and ``search_column`` appends a full-text search tool
     bound to that column, which requires a BM25 index on it. ``search_columns`` selects
@@ -293,8 +300,16 @@ def make_hotdata_tools(
             table=table,
             file=file,
             schema=schema_name or DEFAULT_SCHEMA,
+            allow_private_hosts=allow_private_hosts,
         )
         return json.dumps(load_result_summary(loaded), indent=2)
+
+    # Saves the model a turn it would otherwise spend discovering the rule from an error.
+    url_rule = (
+        ""
+        if allow_private_hosts
+        else " (a URL must be on the public internet, not an internal address)"
+    )
 
     has_search = search_table is not None and search_column is not None
     tools = [
@@ -341,7 +356,7 @@ def make_hotdata_tools(
                 "Load a parquet file into a table that was declared on a managed "
                 "database, replacing whatever the table held. 'file' is either a path on "
                 "the local filesystem or an http:// or https:// URL, which is downloaded "
-                "and uploaded for you. 'database_id' must be a database id returned by "
+                f"and uploaded for you{url_rule}. 'database_id' must be a database id returned by "
                 "hotdata_list_managed_databases or hotdata_create_managed_database — call "
                 "one of those first if you do not have an id. A database name is rejected: "
                 "names are not unique, and this load overwrites the table, so the wrong "
