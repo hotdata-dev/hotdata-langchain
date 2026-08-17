@@ -26,9 +26,16 @@ Constraints that matter enough to state in a tool description:
   `COUNT(<column>)` as the safe form. What distinguishes an affected table is unidentified;
   tracked as [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37).
   It really is the projection as a whole, not the `COUNT(*)` in it: on that same `listings`
-  table, `SELECT COUNT(*) AS row_count, COUNT(id) AS n0 FROM default.public.listings` succeeds
-  (verified 2026-08-17), which is what lets `hotdata_describe_tables` count rows and per-column
+  table, `SELECT COUNT(*) AS row_count, COUNT("id") AS n0 FROM default.public.listings`
+  succeeds (verified 2026-08-17, in the quoted form `hotdata_describe_tables` actually emits;
+  the unquoted form succeeds too). That is what lets the tool count rows and per-column
   non-NULLs in one query.
+- **A column name the parser rejects is rarer than it looks, and quoting covers it.** Of
+  `order`, `group`, `table`, `end`, `start`, `select`, `from`, `where`, `case`, `values` and
+  `all` as a column name in `COUNT(<name>)`, only `all` fails to parse unquoted; the rest reach
+  name resolution (verified 2026-08-17). Quoting the name parses in every case. Quoting is safe
+  for a name read back from `information_schema`, which is the name as stored — the caveat
+  under "Identifiers" below is about quoting to *impose* a case the store does not have.
 - **A declared managed table with no data rejects every query**, with `Managed table
   'default.public.customer' is declared but has no data; POST a load before querying`, and
   reports zero rows in `information_schema.columns`. Worth knowing because it is easily
