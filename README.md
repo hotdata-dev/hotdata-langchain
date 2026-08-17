@@ -83,7 +83,10 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...", handle_errors=True)
 
 What reaches the model is the engine's own message, not the framework's `RuntimeError("Bad
 Request")` — `Invalid function 'date_sub'. Did you mean 'date_bin'?` is something a model can
-act on, and was observed correcting its query on the next call. `hl.engine_error_message(exc)`
+act on, and was observed correcting its query on the next call. The exception is a failure this
+package can explain better than the engine can, such as a [date format
+pattern](#warnings-about-results-that-are-not-what-they-look-like) that will not be
+interpreted: that message leads, with the engine's after it. `hl.engine_error_message(exc)`
 exposes that lookup on its own, and `hl.with_error_feedback(tools)` applies the same wrapping to
 tools built elsewhere, such as a retriever tool registered alongside these:
 
@@ -492,7 +495,7 @@ wrong. They are reported in `metadata.client_warning`:
     "warning": null,
     "client_warning": "Returned the first 100 rows of the 7535 this query matched. ..."
   },
-  "rows": []
+  "rows": ["… the first 100 …"]
 }
 ```
 

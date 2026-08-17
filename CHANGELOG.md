@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Types alone say a column exists, not that anything is in it: asked what was worth analysing,
   an agent recommended a column that is NULL on all 7,535 rows, and a 63-column spans table
   presents 46 sparse `attr_*` columns as equally available. One aggregate per table described;
-  turn it off with `describe_column_stats=False`.
+  turn it off with `describe_column_stats=False` on `make_hotdata_tools`, or `column_stats=False`
+  on the tool factory and `describe_tables_json`.
 - Every tool's arguments now carry descriptions in the JSON schema the model sees. Tools reach
   a model through two channels — the description and the argument schema — and only the first
   was used; `k` in particular arrived as `{"title": "K", "type": "integer"}` and nothing else.
