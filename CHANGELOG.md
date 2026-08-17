@@ -29,7 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worked out. The engine's patterns are strftime, so `to_char(d, 'YYYY-MM-DD')` returns the
   literal text `YYYY-MM-DD` on every row with no error — a deployed agent over OpenTelemetry
   spans answered with `Day 1, Day 2, Day 3, Day 4` from correct numbers whose labels were all
-  that string. The check is engine-independent and catches a hand-written query too.
+  that string. The check is engine-independent and catches a hand-written query too. The same
+  hint is raised when the query *fails*, ahead of the engine's own message and as a
+  `HotdataToolError` — applying a template to a column rather than a literal was measured
+  returning nothing more specific than "An internal server error occurred", so on that path
+  the hint is all the model has.
 - `hotdata_describe_tables` reports each column's `non_null` count and the table's `row_count`.
   Types alone say a column exists, not that anything is in it: asked what was worth analysing,
   an agent recommended a column that is NULL on all 7,535 rows, and a 63-column spans table
@@ -39,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a model through two channels — the description and the argument schema — and only the first
   was used; `k` in particular arrived as `{"title": "K", "type": "integer"}` and nothing else.
 - `search_key_column` (default `"id"`) on `make_hotdata_tools` and `make_hotdata_search_tool`,
-  and `result_payload`/`result_json`/`CLIENT_WARNING_KEY` as public exports.
+  and `HotdataToolError`, `result_payload`, `result_json` and `CLIENT_WARNING_KEY` as public
+  exports. `engine_error_message` returns a `HotdataToolError`'s message as it stands rather
+  than walking past it to the response body it was built from.
 
 ### Changed
 

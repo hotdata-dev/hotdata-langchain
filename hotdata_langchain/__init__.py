@@ -18,6 +18,7 @@ from hotdata_langchain.databases import (
     resolve_database_by_id,
 )
 from hotdata_langchain.errors import (
+    HotdataToolError,
     engine_error_message,
     error_feedback,
     with_error_feedback,
@@ -68,6 +69,7 @@ __all__ = [
     "DISTANCE_FUNCTIONS",
     "SCORE_COLUMN",
     "HotdataClient",
+    "HotdataToolError",
     "HotdataVectorStore",
     "ManagedDatabase",
     "QueryResult",

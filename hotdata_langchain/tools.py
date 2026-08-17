@@ -20,7 +20,7 @@ from hotdata_langchain.databases import (
     query_scope,
     resolve_database_by_id,
 )
-from hotdata_langchain.errors import with_error_feedback
+from hotdata_langchain.errors import HotdataToolError, engine_error_message, with_error_feedback
 from hotdata_langchain.results import result_json
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
@@ -205,9 +205,23 @@ def execute_sql_json(
     succeeded without doing what it said: rows capped at ``max_rows``, or a date/time
     format pattern the engine will not interpret. The engine's own
     ``metadata.warning`` is separate and passed through untouched.
+
+    A format pattern that makes the query *fail* is reported the same way, in the
+    exception's message and ahead of the engine's own. That is the case where the
+    package's read matters most: applying a PostgreSQL template to a column, rather than
+    to a literal, was measured returning nothing more specific than "An internal server
+    error occurred", so the model has only this to work from.
     """
-    result = client.execute_sql(sql, database=query_scope(database))
-    return result_json(result, max_rows=max_rows, warnings=format_pattern_warnings(sql))
+    warnings = format_pattern_warnings(sql)
+    try:
+        result = client.execute_sql(sql, database=query_scope(database))
+    except Exception as exc:
+        if not warnings:
+            raise
+        raise HotdataToolError(
+            " ".join([*warnings, f"The engine reported: {engine_error_message(exc)}"])
+        ) from exc
+    return result_json(result, max_rows=max_rows, warnings=warnings)
 
 
 def make_hotdata_tools(

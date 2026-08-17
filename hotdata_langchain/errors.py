@@ -27,6 +27,17 @@ MAX_MESSAGE_CHARS = 1000
 ToolT = TypeVar("ToolT", bound=BaseTool)
 
 
+class HotdataToolError(RuntimeError):
+    """A failure this package has already turned into a message the model can act on.
+
+    Raised where the package knows something about the failure that the engine's own
+    message does not carry — a SQL query whose date format pattern will not be
+    interpreted, for instance, which the engine can answer with nothing more specific
+    than an internal error. :func:`engine_error_message` returns its text verbatim
+    instead of walking past it to the response body it was built from.
+    """
+
+
 def engine_error_message(exc: BaseException, *, max_chars: int = MAX_MESSAGE_CHARS) -> str:
     """Return the engine's own message for a failed call.
 
@@ -43,7 +54,13 @@ def engine_error_message(exc: BaseException, *, max_chars: int = MAX_MESSAGE_CHA
 
     The result is truncated to ``max_chars``: it goes into the model's context on every
     failure, and a long body is noise the model cannot act on anyway.
+
+    A :class:`HotdataToolError` is returned as it stands. Its message was assembled here
+    and already contains whatever the chain below it carries, so walking past it would
+    replace a message naming the fix with the engine's own less specific one.
     """
+    if isinstance(exc, HotdataToolError):
+        return _truncate(str(exc), max_chars)
     seen: set[int] = set()
     node: BaseException | None = exc
     while node is not None and id(node) not in seen:

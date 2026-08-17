@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
-from hotdata_langchain._sql import validate_identifier
+from hotdata_langchain._sql import is_identifier, validate_identifier
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
 
 logger = logging.getLogger(__name__)
@@ -78,21 +78,31 @@ def _column_stats(
     table: str,
     columns: Sequence[str],
     database: ManagedDatabase | None,
-) -> tuple[int, list[int]] | None:
-    """Return ``(row_count, non_null_per_column)``, or ``None`` when the query fails.
+) -> tuple[int, dict[str, int]] | None:
+    """Return ``(row_count, non_null_by_column)``, or ``None`` when the query fails.
 
-    Fails open: a table whose stats cannot be read is still described by its schema,
-    which is what the tool was doing before the counts existed.
+    Fails open in both directions: a table whose stats cannot be read is still described
+    by its schema, which is what the tool did before the counts existed, and a column
+    whose name cannot be written as a bare identifier is skipped rather than taking the
+    whole description down with it. Names come from the table, not from the caller, so a
+    parquet file with a column named ``list price`` is a data property rather than a
+    mistake to raise on.
     """
-    if not columns:
+    countable = [name for name in columns if is_identifier(name)]
+    if len(countable) != len(columns):
+        logger.debug("%s has columns that cannot be counted by name", table)
+    if not countable:
         return None
-    sql = column_stats_sql(table, columns)
     try:
-        result = client.execute_sql(sql, database=query_scope(database))
+        result = client.execute_sql(
+            column_stats_sql(table, countable), database=query_scope(database)
+        )
         values = result.rows[0]
-        if len(values) != len(columns) + 1:
-            raise ValueError(f"expected {len(columns) + 1} counts, got {len(values)}")
-        return int(values[0]), [int(value) for value in values[1:]]
+        if len(values) != len(countable) + 1:
+            raise ValueError(f"expected {len(countable) + 1} counts, got {len(values)}")
+        return int(values[0]), {
+            name: int(value) for name, value in zip(countable, values[1:], strict=True)
+        }
     except Exception:
         logger.warning("could not count populated columns for %s", table, exc_info=True)
         return None
@@ -208,8 +218,10 @@ def describe_tables_json(
     if stats is not None:
         row_count, non_null = stats
         payload["row_count"] = row_count
-        for entry, count in zip(columns, non_null, strict=True):
-            entry["non_null"] = count
+        for entry in columns:
+            count = non_null.get(str(entry["name"]))
+            if count is not None:
+                entry["non_null"] = count
         payload["column_stats"] = (
             "non_null is how many of the table's rows hold a value in that column; a "
             "column at 0 is empty and nothing can be computed from it."

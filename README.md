@@ -505,6 +505,11 @@ patterns are strftime, so `to_char(d, 'YYYY-MM-DD')` is not a pattern at all —
 literal text `YYYY-MM-DD` on every row, with no error. Any format pattern containing no `%`
 is flagged, with the strftime equivalent when it can be worked out.
 
+The same query applied to a *column* rather than a literal fails instead of returning a wrong
+value, and the engine answers with nothing more specific than an internal error. So the hint
+is raised on that path too, as a `HotdataToolError` carrying it ahead of the engine's message
+— which is what `handle_errors=True` then hands to the model.
+
 ## Run the examples
 
 ```bash

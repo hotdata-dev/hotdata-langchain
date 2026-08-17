@@ -59,3 +59,14 @@ def test_each_offending_pattern_is_reported_once() -> None:
 def test_pattern_nested_inside_another_call_is_not_read_as_this_call_s() -> None:
     """Only the call's own arguments are inspected, never a literal one level down."""
     assert format_pattern_warnings("SELECT to_char(coalesce(d, cast('YYYY' AS DATE))) FROM t") == []
+
+
+def test_the_rule_is_spelled_out_once_per_query() -> None:
+    """The same template reaching to_date and to_char is the ordinary shape of the mistake."""
+    first, second = format_pattern_warnings(
+        "SELECT to_char(to_date(first_review, 'YYYY-MM-DD'), 'YYYY-MM') FROM t"
+    )
+    assert "strftime" in first
+    assert "strftime" not in second
+    assert "with the same problem" in second
+    assert "'%Y-%m-%d'" in second

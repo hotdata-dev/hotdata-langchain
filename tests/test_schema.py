@@ -331,3 +331,25 @@ def test_describe_description_tells_the_model_to_check_non_null() -> None:
 def test_describe_tool_describes_its_table_argument() -> None:
     tool = make_hotdata_describe_tables_tool(MagicMock())
     assert "description" in tool.args["table"]
+
+
+def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
+    """Column names come from the table, so 'list price' is a data property, not a mistake."""
+    client = MagicMock()
+    client.execute_sql.side_effect = [
+        result(
+            ["table_schema", "table_name", "column_name", "data_type"],
+            [
+                ["public", "listings", "id", "Int64"],
+                ["public", "listings", "list price", "Float64"],
+            ],
+        ),
+        result(["row_count", "n0"], [[7535, 7535]]),
+    ]
+    payload = json.loads(describe_tables_json(client, table="listings"))
+    assert payload["row_count"] == 7535
+    assert payload["columns"][0]["non_null"] == 7535
+    assert "non_null" not in payload["columns"][1]
+    assert executed_sqls(client)[1] == (
+        "SELECT COUNT(*) AS row_count, COUNT(id) AS n0 FROM public.listings"
+    )

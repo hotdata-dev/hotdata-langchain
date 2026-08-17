@@ -11,6 +11,11 @@ import re
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def is_identifier(value: str) -> bool:
+    """Return whether ``value`` can be written into SQL as a bare identifier."""
+    return IDENTIFIER_RE.fullmatch(value) is not None
+
+
 def validate_identifier(value: str, *, label: str) -> str:
     """Return ``value`` if it is a bare SQL identifier, else raise ``ValueError``."""
     if not IDENTIFIER_RE.fullmatch(value):
@@ -148,6 +153,10 @@ def format_pattern_warnings(sql: str) -> list[str]:
     readily as a generated one.
 
     Literals with no letters are left alone, so a separator-only argument does not warn.
+
+    The rule is spelled out once. One query passing the same template to ``to_date`` and
+    ``to_char`` is the ordinary shape of this mistake, and repeating the explanation per
+    pattern doubles the text the model has to read to find the two names in it.
     """
     warnings: list[str] = []
     seen: set[tuple[str, str]] = set()
@@ -161,6 +170,9 @@ def format_pattern_warnings(sql: str) -> list[str]:
             seen.add((function.lower(), literal))
             suggestion = _strftime_equivalent(literal)
             fix = f" Write '{suggestion}' instead." if suggestion else ""
+            if warnings:
+                warnings.append(f"{function} was given '{literal}', with the same problem.{fix}")
+                continue
             warnings.append(
                 f"{function} was given the format pattern '{literal}', which contains no "
                 f"'%'. Format patterns here are strftime, not PostgreSQL templates, so a "
