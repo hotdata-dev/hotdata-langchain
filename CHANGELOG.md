@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `metadata.client_warning`, a warning channel of this package's own, on the SQL and search
+  envelopes. `metadata.warning` belongs to the engine — the SDK populates it from the query
+  response and this package only passes it through — so writing our own text there could
+  overwrite an engine-supplied warning. The two now stay separable, and the key is absent when
+  there is nothing to say ([#60](https://github.com/hotdata-dev/hotdata-langchain/issues/60)).
+- A result cut at `max_rows` says so, naming how many rows the query matched and where the cap
+  fell. `row_count` was already the pre-cap total on the SQL path, and a deployed agent did
+  spot the gap and paginate unprompted — but nothing stated the boundary, so it guessed
+  `OFFSET 96` and re-read four rows it already had. The SQL tool's description now states the
+  cap as well.
+- A `k` above the search tool's row limit is reported in `client_warning`. The clamp runs
+  *before* the query, so the engine only ever ranks `max_rows` rows and `row_count` honestly
+  reports them: "asked for 200, got 100" was indistinguishable from "only 100 matched", and an
+  agent was measured reporting a cohort it believed was 200 listings. The ceiling is now stated
+  in the tool description too.
+- SQL passing a date/time format pattern with no `%` to `to_char`, `to_date`, `to_timestamp`
+  or `date_format` is flagged in `client_warning`, with the strftime equivalent when it can be
+  worked out. The engine's patterns are strftime, so `to_char(d, 'YYYY-MM-DD')` returns the
+  literal text `YYYY-MM-DD` on every row with no error — a deployed agent over OpenTelemetry
+  spans answered with `Day 1, Day 2, Day 3, Day 4` from correct numbers whose labels were all
+  that string. The check is engine-independent and catches a hand-written query too.
+- `hotdata_describe_tables` reports each column's `non_null` count and the table's `row_count`.
+  Types alone say a column exists, not that anything is in it: asked what was worth analysing,
+  an agent recommended a column that is NULL on all 7,535 rows, and a 63-column spans table
+  presents 46 sparse `attr_*` columns as equally available. One aggregate per table described;
+  turn it off with `describe_column_stats=False`.
+- Every tool's arguments now carry descriptions in the JSON schema the model sees. Tools reach
+  a model through two channels — the description and the argument schema — and only the first
+  was used; `k` in particular arrived as `{"title": "K", "type": "integer"}` and nothing else.
+- `search_key_column` (default `"id"`) on `make_hotdata_tools` and `make_hotdata_search_tool`,
+  and `result_payload`/`result_json`/`CLIENT_WARNING_KEY` as public exports.
+
+### Changed
+
+- A search hit carries the table's `id` alongside the searched column by default, where before
+  it carried the searched column alone. The id is what joins a hit back to the fact table, so
+  the old default quietly disabled this integration's central claim, that a retrieved row is an
+  ordinary SQL value; the downstream application had to discover this and pass `search_columns`
+  by hand. The column is looked up once when the tool is built and dropped when the table has
+  none. Pass `search_key_column=None` for the previous behaviour, or `search_columns` to name
+  the projection outright.
+- A table declared on a managed database but never loaded is reported as declared and empty
+  rather than as a missing table. It has no rows in `information_schema.columns`, so its schema
+  lookup was indistinguishable from a table that does not exist.
+
 
 ## [0.8.0] - 2026-08-14
 

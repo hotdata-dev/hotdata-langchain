@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Sequence
 
 from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import validate_identifier
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DESCRIBE_TOOL_NAME = "hotdata_describe_tables"
 
@@ -53,12 +57,79 @@ def table_columns_sql(table: str, *, limit: int = DEFAULT_MAX_COLUMNS) -> str:
     )
 
 
+def column_stats_sql(table: str, columns: Sequence[str]) -> str:
+    """Return SQL counting the table's rows and each column's non-NULL values.
+
+    One aggregate query over every column, so learning which columns hold data costs a
+    single extra round trip rather than one per column. ``COUNT(*)`` is safe here even
+    on the tables that reject a bare ``COUNT(*)``: the projection names real columns
+    alongside it, which is what those tables require.
+    """
+    aggregates = ", ".join(
+        f"COUNT({validate_identifier(name, label='column')}) AS n{index}"
+        for index, name in enumerate(columns)
+    )
+    return f"SELECT COUNT(*) AS row_count, {aggregates} FROM {table}"
+
+
+def _column_stats(
+    client: HotdataClient,
+    *,
+    table: str,
+    columns: Sequence[str],
+    database: ManagedDatabase | None,
+) -> tuple[int, list[int]] | None:
+    """Return ``(row_count, non_null_per_column)``, or ``None`` when the query fails.
+
+    Fails open: a table whose stats cannot be read is still described by its schema,
+    which is what the tool was doing before the counts existed.
+    """
+    if not columns:
+        return None
+    sql = column_stats_sql(table, columns)
+    try:
+        result = client.execute_sql(sql, database=query_scope(database))
+        values = result.rows[0]
+        if len(values) != len(columns) + 1:
+            raise ValueError(f"expected {len(columns) + 1} counts, got {len(values)}")
+        return int(values[0]), [int(value) for value in values[1:]]
+    except Exception:
+        logger.warning("could not count populated columns for %s", table, exc_info=True)
+        return None
+
+
+def _declared_but_empty(
+    client: HotdataClient,
+    *,
+    table: str,
+    database: ManagedDatabase | None,
+) -> bool:
+    """Return whether ``table`` is declared on ``database`` but holds no data.
+
+    A declared table that has never been loaded reports zero rows in
+    ``information_schema.columns``, so its schema lookup is indistinguishable from a
+    missing table. The managed-table listing is what tells the two apart.
+    """
+    if database is None:
+        return False
+    schema, name = _split_table(table)
+    try:
+        return any(
+            entry.table == name and (schema is None or entry.schema == schema)
+            for entry in client.list_managed_tables(database)
+        )
+    except Exception:
+        logger.debug("could not list managed tables for %s", database.id, exc_info=True)
+        return False
+
+
 def describe_tables_json(
     client: HotdataClient,
     *,
     table: str | None = None,
     database: ManagedDatabase | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
+    column_stats: bool = True,
 ) -> str:
     """Describe the scoped database's tables, or one table's columns, as JSON.
 
@@ -66,6 +137,17 @@ def describe_tables_json(
     what exists. With ``table`` it returns that table's columns and types in
     declaration order, capped at ``max_columns`` so a wide table cannot flood the
     model's context; the payload says so when the cap truncated the list.
+
+    ``column_stats`` adds the table's ``row_count`` and each column's ``non_null``
+    count, from one extra aggregate query. Types alone say a column exists, not whether
+    it holds anything: an agent was measured recommending an analysis of a column that
+    is NULL on all 7,535 rows, and a table of 63 columns where most are populated only
+    by the instrumentation that writes them presents every one as equally available.
+    Turn it off to describe a table without scanning it.
+
+    A table that is declared on the database but has never been loaded reports no
+    columns at all, which reads as a missing table. It is reported as declared and
+    empty instead.
 
     ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
     with :func:`hotdata_langchain.databases.resolve_database_by_id`.
@@ -92,28 +174,72 @@ def describe_tables_json(
     result = client.execute_sql(table_columns_sql(table, limit=max_columns + 1), database=scope)
     records = result.to_records()
     if not records:
+        if _declared_but_empty(client, table=table, database=database):
+            return json.dumps(
+                {
+                    "table": table,
+                    "columns": [],
+                    "row_count": 0,
+                    "note": (
+                        f"{table} is declared on this database but has no data yet, so it "
+                        f"has no columns and every query against it fails. Load data into "
+                        f"it before querying."
+                    ),
+                },
+                indent=2,
+            )
         return json.dumps(
             {"table": table, "columns": [], "error": f"no table named {table!r} in this database"},
             indent=2,
         )
     truncated = len(records) > max_columns
     records = records[:max_columns]
-    payload: dict[str, object] = {
-        "table": f"{records[0]['table_schema']}.{records[0]['table_name']}",
-        "columns": [{"name": r["column_name"], "type": r["data_type"]} for r in records],
-    }
+    qualified = f"{records[0]['table_schema']}.{records[0]['table_name']}"
+    names = [str(r["column_name"]) for r in records]
+    columns: list[dict[str, object]] = [
+        {"name": name, "type": r["data_type"]} for name, r in zip(names, records, strict=True)
+    ]
+    payload: dict[str, object] = {"table": qualified, "columns": columns}
+    stats = (
+        _column_stats(client, table=qualified, columns=names, database=database)
+        if column_stats
+        else None
+    )
+    if stats is not None:
+        row_count, non_null = stats
+        payload["row_count"] = row_count
+        for entry, count in zip(columns, non_null, strict=True):
+            entry["non_null"] = count
+        payload["column_stats"] = (
+            "non_null is how many of the table's rows hold a value in that column; a "
+            "column at 0 is empty and nothing can be computed from it."
+        )
     if truncated:
         payload["truncated_at"] = max_columns
     return json.dumps(payload, indent=2)
 
 
-def default_describe_description() -> str:
-    """Return the agent-facing description for the schema tool."""
+def default_describe_description(*, column_stats: bool = True) -> str:
+    """Return the agent-facing description for the schema tool.
+
+    ``column_stats`` adds the sentence about ``non_null``. It is stated in the
+    description as well as in the payload because the point of the counts is to change
+    what the model plans before it reads any rows, and a column it never asked about is
+    a column whose emptiness it never sees.
+    """
+    populated = (
+        "Each column also reports 'non_null', how many rows actually hold a value: a "
+        "column can exist, be correctly typed, and still be empty on every row, so "
+        "check it before building an analysis on that column.\n"
+        if column_stats
+        else ""
+    )
     return (
         "Discover what data is available before writing a query. Called with no "
         "arguments it lists every table with how many columns it has; called with a "
         "table name ('listings' or 'public.listings') it returns that table's columns "
         "and their types.\n"
+        f"{populated}"
         "Use it whenever you are unsure a table or column exists — guessing a column "
         "name that is not there makes the query fail."
     )
@@ -126,12 +252,17 @@ def make_hotdata_describe_tables_tool(
     name: str = DEFAULT_DESCRIBE_TOOL_NAME,
     description: str | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
+    column_stats: bool = True,
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
 
     ``database_id`` scopes the introspection to one managed database, by id and never by
     name; it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip
     the lookup.
+
+    ``column_stats`` (on by default) reports each column's non-NULL count alongside its
+    type, at the cost of one aggregate query per described table. Turn it off where
+    describing a table must not scan it.
 
     Fails fast on a non-positive ``max_columns`` rather than at first invocation.
     """
@@ -140,11 +271,23 @@ def make_hotdata_describe_tables_tool(
     database = resolve_database_by_id(client, database_id) if database_id is not None else None
 
     def hotdata_describe_tables(table: str | None = None) -> str:
-        """List the tables in the database, or one table's columns and types."""
-        return describe_tables_json(client, table=table, database=database, max_columns=max_columns)
+        """List the tables in the database, or one table's columns and types.
+
+        Args:
+            table: the table to describe, as 'listings' or 'public.listings'. Omit it
+                to list every table in the database instead.
+        """
+        return describe_tables_json(
+            client,
+            table=table,
+            database=database,
+            max_columns=max_columns,
+            column_stats=column_stats,
+        )
 
     return StructuredTool.from_function(
         func=hotdata_describe_tables,
         name=name,
-        description=description or default_describe_description(),
+        description=description or default_describe_description(column_stats=column_stats),
+        parse_docstring=True,
     )

@@ -25,6 +25,10 @@ Constraints that matter enough to state in a tool description:
   not an aggregate at all. Naming a column always works, so the description gives
   `COUNT(<column>)` as the safe form. What distinguishes an affected table is unidentified;
   tracked as [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37).
+  It really is the projection as a whole, not the `COUNT(*)` in it: on that same `listings`
+  table, `SELECT COUNT(*) AS row_count, COUNT(id) AS n0 FROM default.public.listings` succeeds
+  (verified 2026-08-17), which is what lets `hotdata_describe_tables` count rows and per-column
+  non-NULLs in one query.
 - **A declared managed table with no data rejects every query**, with `Managed table
   'default.public.customer' is declared but has no data; POST a load before querying`, and
   reports zero rows in `information_schema.columns`. Worth knowing because it is easily

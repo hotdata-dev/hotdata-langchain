@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from hotdata_framework import ManagedDatabase, QueryResult
 
+from hotdata_langchain.results import CLIENT_WARNING_KEY
 from hotdata_langchain.search import (
     DEFAULT_SEARCH_LIMIT,
     bm25_search_json,
@@ -200,8 +201,9 @@ def test_search_tool_name_and_arguments(mock_client: MagicMock) -> None:
 
 
 def test_search_tool_description_grounds_the_agent(mock_client: MagicMock) -> None:
-    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
-    assert tool.description == default_search_description(TABLE, COLUMN)
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, key_column=None)
+    expected = default_search_description(TABLE, COLUMN, columns=[COLUMN], max_k=100)
+    assert tool.description == expected
     assert COLUMN in tool.description
     assert TABLE in tool.description
 
@@ -320,9 +322,163 @@ def test_search_tool_keeps_a_clamped_k_positive(
     assert executed_sql(mock_client).endswith("LIMIT 1")
 
 
+def test_clamping_k_says_so_in_the_client_warning(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """The clamp runs before the query, so nothing else in the result records it."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=10)
+    payload = json.loads(tool.invoke({"query": QUERY, "k": 200}))
+    warning = payload["metadata"][CLIENT_WARNING_KEY]
+    assert "k=200" in warning
+    assert "10" in warning
+    assert payload["metadata"]["warning"] is None
+
+
+def test_an_unclamped_k_warns_about_nothing(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=10)
+    payload = json.loads(tool.invoke({"query": QUERY, "k": 10}))
+    assert CLIENT_WARNING_KEY not in payload["metadata"]
+
+
+def test_a_caller_supplied_k_does_not_warn(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """Nothing was clamped, so there is nothing to report."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, k=50, max_rows=10)
+    payload = json.loads(tool.invoke({"query": QUERY}))
+    assert CLIENT_WARNING_KEY not in payload["metadata"]
+
+
+def test_search_tool_states_the_k_ceiling_to_the_model(mock_client: MagicMock) -> None:
+    """ "Ask for more with k" was an invitation the tool did not honour."""
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=25)
+    assert "25" in (tool.description or "")
+
+
+def test_search_tool_describes_its_k_argument(mock_client: MagicMock) -> None:
+    """The argument schema is a second model-facing channel; k reached it unexplained."""
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    assert "description" in tool.args["k"]
+    assert "description" in tool.args["query"]
+
+
 def test_search_tool_rejects_a_non_positive_max_rows(mock_client: MagicMock) -> None:
     with pytest.raises(ValueError, match="max_rows must be >= 1"):
         make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, max_rows=0)
+
+
+# --- The join key in the default projection ---------------------------------------
+
+
+def columns_result(names: list[str]) -> QueryResult:
+    return QueryResult(
+        columns=["column_name"],
+        rows=[[name] for name in names],
+        row_count=len(names),
+        result_id="res_cols",
+        query_run_id="run_cols",
+        execution_time_ms=2,
+        warning=None,
+        error_message=None,
+    )
+
+
+def test_default_projection_carries_the_key_when_the_table_has_one(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """A hit with no id joins back to nothing, which disables the whole claim."""
+    mock_client.execute_sql.side_effect = [columns_result(["id"]), search_result]
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT id, description, score")
+
+
+def test_key_column_is_dropped_when_the_table_does_not_have_it(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """It is looked up, not assumed, so a table without one is projected as before."""
+    mock_client.execute_sql.side_effect = [columns_result([]), search_result]
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT description, score")
+
+
+def test_a_failed_key_lookup_still_builds_the_tool(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """A schema query is never the reason tool construction fails."""
+    mock_client.execute_sql.side_effect = [
+        RuntimeError("information_schema is unavailable"),
+        search_result,
+    ]
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT description, score")
+
+
+def test_explicit_columns_are_left_exactly_as_given(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """A caller naming the projection has already chosen; nothing is added to it."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(
+        mock_client, table=TABLE, column=COLUMN, columns=["listing_id", COLUMN]
+    )
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT listing_id, description, score")
+
+
+def test_key_column_can_be_turned_off(mock_client: MagicMock, search_result: QueryResult) -> None:
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, key_column=None)
+    tool.invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT description, score")
+    assert mock_client.execute_sql.call_count == 1
+
+
+def test_key_column_lookup_is_scoped_to_the_searched_table(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    mock_client.execute_sql.side_effect = [columns_result(["id"]), search_result]
+    make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, key_column="listing_id")
+    lookup = mock_client.execute_sql.call_args_list[0].args[0]
+    assert "table_catalog = 'default'" in lookup
+    assert "table_schema = 'public'" in lookup
+    assert "table_name = 'listings'" in lookup
+    assert "column_name = 'listing_id'" in lookup
+
+
+def test_description_names_the_columns_a_hit_carries(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """Whether a result can be joined should be readable before calling the tool."""
+    mock_client.execute_sql.side_effect = [columns_result(["id"]), search_result]
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN)
+    assert "id and description" in (tool.description or "")
+
+
+def test_make_hotdata_tools_passes_the_key_column_through(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    mock_client.execute_sql.side_effect = [columns_result(["id"]), search_result]
+    tools = {
+        tool.name: tool
+        for tool in make_hotdata_tools(
+            mock_client,
+            search_table=TABLE,
+            search_column=COLUMN,
+            describe_tables=False,
+            management_tools=False,
+            catalog="default",
+        )
+    }
+    tools["hotdata_search_text"].invoke({"query": QUERY})
+    assert executed_sql(mock_client).startswith("SELECT id, description, score")
 
 
 def test_search_tool_validates_corpus_at_construction(mock_client: MagicMock) -> None:
