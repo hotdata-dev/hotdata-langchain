@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
-from hotdata_langchain._sql import is_identifier, validate_identifier
+from hotdata_langchain._sql import quote_identifier, validate_identifier
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,26 @@ def column_stats_sql(table: str, columns: Sequence[str]) -> str:
     single extra round trip rather than one per column. ``COUNT(*)`` is safe here even
     on the tables that reject a bare ``COUNT(*)``: the projection names real columns
     alongside it, which is what those tables require.
+
+    Column names are quoted, since they come from the table rather than from a caller.
+    Most words a caller might worry about need no quoting here — ``order``, ``group``,
+    ``table``, ``end`` and ``start`` all parse unquoted (verified 2026-08-17) — but
+    ``all`` does not, and one such column would otherwise fail the whole aggregate and
+    cost every column its count.
     """
     aggregates = ", ".join(
-        f"COUNT({validate_identifier(name, label='column')}) AS n{index}"
-        for index, name in enumerate(columns)
+        f"COUNT({quote_identifier(name)}) AS n{index}" for index, name in enumerate(columns)
     )
     return f"SELECT COUNT(*) AS row_count, {aggregates} FROM {table}"
+
+
+def _quotable(name: str) -> bool:
+    """Return whether ``name`` can be written into SQL as a quoted identifier."""
+    try:
+        quote_identifier(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _column_stats(
@@ -83,12 +97,12 @@ def _column_stats(
 
     Fails open in both directions: a table whose stats cannot be read is still described
     by its schema, which is what the tool did before the counts existed, and a column
-    whose name cannot be written as a bare identifier is skipped rather than taking the
-    whole description down with it. Names come from the table, not from the caller, so a
-    parquet file with a column named ``list price`` is a data property rather than a
-    mistake to raise on.
+    whose name cannot be quoted — one carrying a double quote or a null byte — is skipped
+    rather than taking the whole description down with it. Names come from the table, not
+    from the caller, so an unusual one is a data property rather than a mistake to raise
+    on.
     """
-    countable = [name for name in columns if is_identifier(name)]
+    countable = [name for name in columns if _quotable(name)]
     if len(countable) != len(columns):
         logger.debug("%s has columns that cannot be counted by name", table)
     if not countable:
@@ -119,14 +133,16 @@ def _declared_but_empty(
     A declared table that has never been loaded reports zero rows in
     ``information_schema.columns``, so its schema lookup is indistinguishable from a
     missing table. The managed-table listing is what tells the two apart.
+
+    The schema is filtered by the listing call rather than by reading it back off each
+    record, matching how ``HotdataVectorStore`` asks the same question.
     """
     if database is None:
         return False
     schema, name = _split_table(table)
     try:
         return any(
-            entry.table == name and (schema is None or entry.schema == schema)
-            for entry in client.list_managed_tables(database)
+            entry.table == name for entry in client.list_managed_tables(database, schema=schema)
         )
     except Exception:
         logger.debug("could not list managed tables for %s", database.id, exc_info=True)

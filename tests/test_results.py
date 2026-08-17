@@ -77,3 +77,9 @@ def test_capped_result_warns_through_the_envelope() -> None:
 def test_caller_warnings_come_before_the_truncation_note() -> None:
     payload = result_payload(result(50, [[1]]), max_rows=1, warnings=["mine."])
     assert payload["metadata"][CLIENT_WARNING_KEY].startswith("mine.")
+
+
+def test_the_remedy_is_the_callers_to_choose() -> None:
+    """Shared envelope, different callers: one writes SQL, one supplies a search string."""
+    payload = result_payload(result(50, [[1]]), max_rows=1, remedy="do something else")
+    assert payload["metadata"][CLIENT_WARNING_KEY].endswith("do something else.")

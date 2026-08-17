@@ -566,3 +566,26 @@ def test_make_hotdata_tools_shares_max_rows_with_search(
     }
     payload = json.loads(tools["hotdata_search_text"].invoke({"query": QUERY}))
     assert len(payload["rows"]) == 1
+
+
+def test_a_capped_search_result_does_not_advise_paging(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """The envelope is shared, but this tool's caller supplies a query string, not SQL."""
+    mock_client.execute_sql.return_value = search_result
+    payload = json.loads(
+        bm25_search_json(mock_client, table=TABLE, column=COLUMN, query=QUERY, max_rows=1)
+    )
+    warning = payload["metadata"][CLIENT_WARNING_KEY]
+    assert "LIMIT/OFFSET" not in warning
+    assert "bm25_search inside SQL" in warning
+
+
+def test_a_caller_k_above_max_rows_still_warns_usefully(
+    mock_client: MagicMock, search_result: QueryResult
+) -> None:
+    """A caller's k is trusted, so the engine ranks more rows than the envelope returns."""
+    mock_client.execute_sql.return_value = search_result
+    tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, k=50, max_rows=1)
+    payload = json.loads(tool.invoke({"query": QUERY}))
+    assert "LIMIT/OFFSET" not in payload["metadata"][CLIENT_WARNING_KEY]

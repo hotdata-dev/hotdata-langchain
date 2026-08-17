@@ -248,13 +248,22 @@ def describing_listings(client: MagicMock, **kwargs: object) -> dict[str, object
 def test_column_stats_sql_counts_rows_and_every_column() -> None:
     """One aggregate for the whole table, not one query per column."""
     assert column_stats_sql("public.listings", ["id", "price"]) == (
-        "SELECT COUNT(*) AS row_count, COUNT(id) AS n0, COUNT(price) AS n1 FROM public.listings"
+        'SELECT COUNT(*) AS row_count, COUNT("id") AS n0, COUNT("price") AS n1 FROM public.listings'
     )
 
 
-def test_column_stats_sql_rejects_a_column_that_is_not_an_identifier() -> None:
-    with pytest.raises(ValueError, match="column must be a bare SQL identifier"):
-        column_stats_sql("public.listings", ["id; DROP TABLE listings"])
+def test_column_stats_sql_quotes_a_name_the_parser_would_reject() -> None:
+    """A column named 'all' fails to parse unquoted, and would cost every other its count."""
+    assert 'COUNT("all")' in column_stats_sql("public.listings", ["all"])
+
+
+def test_column_stats_sql_cannot_be_escaped_by_a_column_name() -> None:
+    """Names arrive from the table rather than the caller, but they still reach SQL text."""
+    sql = column_stats_sql("public.listings", ["id; DROP TABLE listings"])
+    assert sql.count("SELECT") == 1
+    assert 'COUNT("id; DROP TABLE listings")' in sql
+    with pytest.raises(ValueError, match="double quote or a null byte"):
+        column_stats_sql("public.listings", ['id") AS x, COUNT(*'])
 
 
 def test_describe_reports_how_many_rows_hold_a_value() -> None:
@@ -308,6 +317,7 @@ def test_declared_but_unloaded_table_is_not_reported_as_missing(
         SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
     ]
     payload = json.loads(describe_tables_json(client, table="public.customer", database=managed_db))
+    assert client.list_managed_tables.call_args.kwargs == {"schema": "public"}
     assert "error" not in payload
     assert payload["row_count"] == 0
     assert "no data yet" in payload["note"]
@@ -334,14 +344,14 @@ def test_describe_tool_describes_its_table_argument() -> None:
 
 
 def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
-    """Column names come from the table, so 'list price' is a data property, not a mistake."""
+    """One unquotable name costs its own count, not every other column's."""
     client = MagicMock()
     client.execute_sql.side_effect = [
         result(
             ["table_schema", "table_name", "column_name", "data_type"],
             [
                 ["public", "listings", "id", "Int64"],
-                ["public", "listings", "list price", "Float64"],
+                ["public", "listings", 'a "quoted" name', "Float64"],
             ],
         ),
         result(["row_count", "n0"], [[7535, 7535]]),
@@ -351,5 +361,5 @@ def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
     assert payload["columns"][0]["non_null"] == 7535
     assert "non_null" not in payload["columns"][1]
     assert executed_sqls(client)[1] == (
-        "SELECT COUNT(*) AS row_count, COUNT(id) AS n0 FROM public.listings"
+        'SELECT COUNT(*) AS row_count, COUNT("id") AS n0 FROM public.listings'
     )

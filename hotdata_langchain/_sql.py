@@ -11,9 +11,23 @@ import re
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def is_identifier(value: str) -> bool:
-    """Return whether ``value`` can be written into SQL as a bare identifier."""
-    return IDENTIFIER_RE.fullmatch(value) is not None
+def quote_identifier(value: str) -> str:
+    """Return ``value`` as a double-quoted SQL identifier.
+
+    For names that come from the data rather than from a caller: a parquet file can carry
+    a column named ``all``, which the parser rejects unquoted, or ``list price``, which is
+    not an identifier at all. Quoting is safe for the names this package quotes because
+    they are read back from ``information_schema`` exactly as stored — quoting is only a
+    trap when it is used to *impose* a case the store does not have.
+
+    Raises ``ValueError`` for a name carrying a double quote or a null byte, which are the
+    two characters that could end the quoted name early.
+    """
+    if '"' in value or "\x00" in value:
+        raise ValueError(
+            f"a quoted identifier may not contain a double quote or a null byte, got {value!r}"
+        )
+    return '"' + value + '"'
 
 
 def validate_identifier(value: str, *, label: str) -> str:

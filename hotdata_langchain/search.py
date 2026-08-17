@@ -11,7 +11,7 @@ from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import quote_literal, validate_identifier
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
-from hotdata_langchain.results import result_json
+from hotdata_langchain.results import SEARCH_REMEDY, result_json
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +116,13 @@ def bm25_search_json(
     with :func:`hotdata_langchain.databases.resolve_database_by_id`.
 
     ``warnings`` are client-side notes to carry in ``metadata.client_warning`` alongside
-    the one this adds when the result is capped at ``max_rows``.
+    the one this adds when the result is capped at ``max_rows``. That one is phrased for
+    a caller who supplies a search string rather than SQL, since paging or rewriting the
+    query is not something this tool's caller can do.
     """
     sql = bm25_search_sql(table=table, column=column, query=query, k=k, columns=columns)
     result = client.execute_sql(sql, database=query_scope(database))
-    return result_json(result, max_rows=max_rows, warnings=warnings)
+    return result_json(result, max_rows=max_rows, warnings=warnings, remedy=SEARCH_REMEDY)
 
 
 def clamp_warning(*, requested: int, ceiling: int) -> str | None:
