@@ -334,7 +334,9 @@ def make_hotdata_tools(
     that column, which requires a search index on it. Which kind of search it does is read
     off that column's indexes here rather than chosen: a BM25 index gives
     ``hotdata_search_text``, a vector index ``hotdata_search_semantic``. ``search_strategy``
-    forces one and raises if the column cannot serve it. ``search_embedding`` is a LangChain
+    forces one; ``"semantic"`` raises if no vector index covers the column, while ``"text"``
+    falls through to the engine's own error, because index introspection fails open.
+    ``search_embedding`` is a LangChain
     ``Embeddings`` and is required only for a *plain* vector index, where the engine cannot
     embed the query itself; it must be the same model the column was written with.
 

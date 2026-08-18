@@ -601,8 +601,11 @@ def make_hotdata_search_tool(
     rows relevant to this query" — because a model asked to choose between two search
     tools is being handed an implementation detail as a decision.
 
-    ``strategy`` overrides that when a caller wants a specific route, and raises rather
-    than falling back if the column cannot serve it. ``embedding`` is a LangChain
+    ``strategy`` overrides that when a caller wants a specific route. ``"semantic"`` raises
+    if no vector index covers the column, since without one this cannot know whether the
+    engine embeds the query or what metric to use. ``"text"`` does not raise: introspection
+    fails open, so a listing that failed would otherwise turn a working BM25 column into a
+    build error. ``embedding`` is a LangChain
     ``Embeddings`` and is required only for a plain vector index, where the engine has no
     way to embed the query itself; it must be the same model the column was written with.
     See :func:`_resolve_route` for why ``auto`` needs no preference rule.

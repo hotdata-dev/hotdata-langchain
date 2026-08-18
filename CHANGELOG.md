@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were produced and cannot embed a query to match them. An index built with an embedding
   provider needs nothing on this side: the engine embeds both the column and the query. Omitting
   it where it is required fails when the tools are built, not on the agent's first query.
-- `search_strategy=` to force a route and raise if the column cannot serve it.
+- `search_strategy=` to force a route. `"semantic"` raises if no vector index covers the
+  column; `"text"` does not, because index introspection fails open and a failed listing
+  should not stop a tool being built over a column that really is BM25-indexed.
 - `DEFAULT_SEMANTIC_TOOL_NAME`, `SearchRoute`, `SearchStrategy`, `resolve_search_route`,
   `generated_vector_columns` and `indexes_for_column` are exported. The tool name matters most:
   it now varies with the data, so a consumer filtering tools by name has to be able to ask for

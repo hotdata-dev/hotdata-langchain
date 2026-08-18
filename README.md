@@ -257,8 +257,11 @@ that assumes higher-is-better reads the ranking backwards.
 
 Passing `search_embedding` for a plain index is not optional: without it the tools refuse to
 build, rather than failing on the agent's first query with a type error it cannot act on.
-`search_strategy="text"` or `"semantic"` forces a route and raises if the column cannot serve
-it.
+`search_strategy="semantic"` forces that route and raises if no vector index covers the
+column. `search_strategy="text"` forces the text route but does *not* raise, because index
+introspection fails open — a workspace that cannot list indexes would otherwise stop being
+able to build a search tool over a column that really does carry a BM25 index. There the
+engine's own "No BM25 index found" is the error, at the same point it was before.
 
 The two never collide on one column. BM25 indexes a text column and a plain vector index a
 vector column, so they land on different columns of a table; and a provider-backed vector

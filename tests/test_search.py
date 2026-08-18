@@ -910,3 +910,20 @@ def test_results_carry_the_engines_own_distance_name(
     assert "'distance' column" not in (tool.description or "")
     tool.invoke({"query": QUERY})
     assert " AS distance" not in executed_sql(client)
+
+
+def test_forcing_text_does_not_raise_when_no_index_is_visible(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Asymmetric with strategy='semantic', deliberately.
+
+    Introspection fails open, so raising here would turn a listing that failed — a
+    permissions gap, an unreachable control plane — into a build error for a column that
+    really does carry a BM25 index. The engine's own message is the error instead, at the
+    point it was raised before any of this existed.
+    """
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(client, search_indexes, [], database_id=managed_db.id, strategy="text")
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
