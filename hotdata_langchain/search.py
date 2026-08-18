@@ -29,12 +29,11 @@ logger = logging.getLogger(__name__)
 SCORE_COLUMN = "score"
 
 #: Column ``vector_search`` appends, holding the distance from the query. Lower is nearer,
-#: the opposite direction to ``score``. The leading underscore is the engine's, not ours.
+#: the opposite direction to ``score``. The leading underscore is the engine's, not ours, and
+#: results keep it: an earlier version renamed it to ``distance`` because the underscore reads
+#: as private, which left one value with two names across the two descriptions the model reads
+#: — and only the engine's name works in SQL the model writes itself.
 DISTANCE_COLUMN = "_distance"
-
-#: What :data:`DISTANCE_COLUMN` is renamed to in results. A leading underscore reads as
-#: private, and this value is the whole point of a semantic hit.
-DISTANCE_ALIAS = "distance"
 
 #: Distance function serving each vector index metric, for the case where the caller
 #: supplies the query vector. A function the index was not built for is not an error: the
@@ -185,7 +184,7 @@ def _semantic_projection(
             f"vector column cannot fall back to returning {column!r}, since a projected "
             "vector column both floods the result and forfeits the index"
         )
-    return [*(name for name in selected if name != DISTANCE_ALIAS), DISTANCE_ALIAS]
+    return [*(name for name in selected if name != DISTANCE_COLUMN), DISTANCE_COLUMN]
 
 
 def vector_search_sql(
@@ -218,15 +217,11 @@ def vector_search_sql(
         raise ValueError(f"k must be >= 1, got {k}")
 
     projection = _semantic_projection(column, columns, include_column=True)
-    selected = ", ".join(
-        f"{DISTANCE_COLUMN} AS {DISTANCE_ALIAS}" if name == DISTANCE_ALIAS else name
-        for name in projection
-    )
     return (
-        f"SELECT {selected} "
+        f"SELECT {', '.join(projection)} "
         f"FROM vector_search("
         f"{quote_literal(table)}, {quote_literal(column)}, {quote_literal(query)}, {k}) "
-        f"ORDER BY {DISTANCE_ALIAS} ASC"
+        f"ORDER BY {DISTANCE_COLUMN} ASC"
     )
 
 
@@ -269,10 +264,10 @@ def vector_distance_sql(
     projection = _semantic_projection(column, columns, include_column=False)
     literal = "ARRAY[" + ", ".join(repr(float(value)) for value in vector) + "]"
     selected = ", ".join(
-        f"{function}({column}, {literal}) AS {DISTANCE_ALIAS}" if name == DISTANCE_ALIAS else name
+        f"{function}({column}, {literal}) AS {DISTANCE_COLUMN}" if name == DISTANCE_COLUMN else name
         for name in projection
     )
-    return f"SELECT {selected} FROM {table} ORDER BY {DISTANCE_ALIAS} ASC LIMIT {k}"
+    return f"SELECT {selected} FROM {table} ORDER BY {DISTANCE_COLUMN} ASC LIMIT {k}"
 
 
 def semantic_search_json(
@@ -407,6 +402,7 @@ def default_semantic_description(
     *,
     columns: Sequence[str] | None = None,
     max_k: int | None = None,
+    composable: bool = True,
 ) -> str:
     """Return the agent-facing description for a search that ranks by meaning.
 
@@ -419,17 +415,38 @@ def default_semantic_description(
     and a model that assumes "higher is better" reads the ranking backwards. And the
     function to compose with for an aggregate is ``vector_search``, not ``bm25_search``.
 
+    ``composable`` says whether this route can be written in SQL at all, and the closing
+    advice turns on it. A plain vector index cannot: composing one needs a query vector,
+    which SQL cannot express. Sending a model to "rank inside SQL" there contradicts the
+    SQL tool's own description, which says on that route that ranking by meaning is
+    unavailable — and both descriptions arrive in the same prompt. The route object exists
+    to stop those two disagreeing, so it decides this sentence too. The cohort is capped at
+    this tool's row limit either way, which is worth saying on both routes: where the
+    composed form exists it is the way around the cap, and where it does not, raising ``k``
+    is.
+
     The ``LIKE``/``ILIKE`` guard is carried over unchanged. It exists because stating only
     that ``LIKE`` works was measured pulling models into ``ILIKE '%word%'`` instead of
     searching, and that regression is no less likely on this route.
     """
     if not columns:
-        returns = f"Returns the closest-matching rows ordered by a '{DISTANCE_ALIAS}' column"
+        returns = f"Returns the closest-matching rows ordered by a '{DISTANCE_COLUMN}' column"
     else:
-        named = [name for name in columns if name != DISTANCE_ALIAS]
+        named = [name for name in columns if name != DISTANCE_COLUMN]
         listed = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
-        returns = f"Each hit carries {listed}, ordered by a '{DISTANCE_ALIAS}' column"
+        returns = f"Each hit carries {listed}, ordered by a '{DISTANCE_COLUMN}' column"
     ceiling = "" if max_k is None else f", up to a maximum of {max_k}"
+    aggregating = (
+        "Use this to list or inspect the matches themselves. When the answer aggregates "
+        "over the matches rather than listing them, rank inside SQL instead — that keeps "
+        "the whole cohort in the query, where carrying values back as literals caps it at "
+        "this tool's row limit."
+        if composable
+        else "Use this to find the matches, then aggregate over them in SQL using the ids "
+        "it returns — ranking by meaning is not available in SQL here, so raise 'k' to "
+        "widen the cohort rather than trying to rank there. The cohort is whatever this "
+        "returns, so it is capped at this tool's row limit."
+    )
     return (
         f"Find rows of {table} whose '{column}' is closest in meaning to a "
         "natural-language query, ranked by closeness. Matches rows that express the same "
@@ -440,10 +457,7 @@ def default_semantic_description(
         f"values, and 0 would be identical. Distances are comparable within one result "
         f"set but not across queries. Ask for more with 'k' when you need a wider "
         f"net{ceiling}.\n"
-        "Use this to list or inspect the matches themselves. When the answer aggregates "
-        "over the matches rather than listing them, rank inside SQL instead — that keeps "
-        "the whole cohort in the query, where carrying values back as literals caps it at "
-        "this tool's row limit."
+        f"{aggregating}"
     )
 
 
@@ -731,7 +745,9 @@ def make_hotdata_search_tool(
         func=hotdata_search_semantic,
         name=name or DEFAULT_SEMANTIC_TOOL_NAME,
         description=description
-        or default_semantic_description(table, column, columns=projection, max_k=max_rows),
+        or default_semantic_description(
+            table, column, columns=projection, max_k=max_rows, composable=route.composable
+        ),
         parse_docstring=True,
     )
 

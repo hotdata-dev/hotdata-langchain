@@ -229,8 +229,8 @@ implementation detail as a decision.
 | Index on the column | Tool | Ranking column | Needs an `Embeddings` |
 |---|---|---|---|
 | BM25 | `hotdata_search_text` | `score`, highest first | no |
-| vector, provider-backed | `hotdata_search_semantic` | `distance`, lowest first | no — the engine embeds the query |
-| vector, plain | `hotdata_search_semantic` | `distance`, lowest first | **yes**, pass `search_embedding=` |
+| vector, provider-backed | `hotdata_search_semantic` | `_distance`, lowest first | no — the engine embeds the query |
+| vector, plain | `hotdata_search_semantic` | `_distance`, lowest first | **yes**, pass `search_embedding=` |
 
 A *provider-backed* index is one built over a text column with an embedding provider: the
 engine embeds the column and the query, so nothing is needed on this side. A *plain* index is
@@ -248,6 +248,12 @@ tools = hl.make_hotdata_tools(
     search_embedding=OpenAIEmbeddings(model="text-embedding-3-small"),
 )
 ```
+
+`_distance` keeps the engine's own name, underscore included, rather than being tidied to
+`distance` in results. It is the only name that works in SQL the agent writes itself, and one
+value with two names across the two descriptions is a translation step with nothing to gain.
+Lower is nearer, which is the reverse of `score` — both descriptions say so, because a model
+that assumes higher-is-better reads the ranking backwards.
 
 Passing `search_embedding` for a plain index is not optional: without it the tools refuse to
 build, rather than failing on the agent's first query with a type error it cannot act on.

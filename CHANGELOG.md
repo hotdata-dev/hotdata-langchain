@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider needs nothing on this side: the engine embeds both the column and the query. Omitting
   it where it is required fails when the tools are built, not on the agent's first query.
 - `search_strategy=` to force a route and raise if the column cannot serve it.
+- `DEFAULT_SEMANTIC_TOOL_NAME`, `SearchRoute`, `SearchStrategy`, `resolve_search_route`,
+  `generated_vector_columns` and `indexes_for_column` are exported. The tool name matters most:
+  it now varies with the data, so a consumer filtering tools by name has to be able to ask for
+  it rather than hardcode a string that changes when a corpus gains an index.
 
 ### Changed
 
@@ -38,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   express — the description says so instead of advertising it.
 - The semantic route's truncation and `k`-clamp warnings name `vector_search` rather than
   `bm25_search`, for the same reason.
+- The semantic tool's closing advice follows the route too. It told the model to "rank inside
+  SQL instead" on every route, including the plain vector index where the SQL tool's own
+  description says ranking by meaning is unavailable — the two arriving in one prompt, telling
+  it to do a thing and that it cannot. Found by running the tools in front of a model; no test
+  would have caught it, because each description was correct in isolation.
+- Semantic results keep the engine's `_distance` column name rather than renaming it to
+  `distance`. The rename was cosmetic and left one value with two names: `distance` is what the
+  tool returned, `_distance` is the only name that resolves in SQL the agent writes itself.
 
 ### Fixed
 

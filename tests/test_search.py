@@ -609,8 +609,8 @@ def test_vector_search_sql_always_orders_because_the_engine_does_not() -> None:
     without ``ORDER BY`` looks ranked and is not.
     """
     sql = vector_search_sql(table=SEMANTIC_TABLE, column="content", query=QUERY, k=3)
-    assert "ORDER BY distance ASC" in sql
-    assert "_distance AS distance" in sql
+    assert "ORDER BY _distance ASC" in sql
+    assert "_distance" in sql
 
 
 def test_vector_search_sql_bounds_with_the_argument_not_a_trailing_limit() -> None:
@@ -634,8 +634,8 @@ def test_vector_distance_sql_needs_the_limit_that_vector_search_must_not_have() 
         table=SEMANTIC_TABLE, column="embedding", vector=[0.1, 0.2], k=4, columns=["id"]
     )
     assert sql.endswith("LIMIT 4")
-    assert "cosine_distance(embedding, ARRAY[0.1, 0.2]) AS distance" in sql
-    assert "ORDER BY distance ASC" in sql
+    assert "cosine_distance(embedding, ARRAY[0.1, 0.2]) AS _distance" in sql
+    assert "ORDER BY _distance ASC" in sql
 
 
 def test_vector_distance_sql_never_projects_the_vector_column() -> None:
@@ -851,3 +851,62 @@ def test_semantic_clamp_points_at_vector_search_not_bm25(
     warning = payload["metadata"][CLIENT_WARNING_KEY]
     assert "vector_search" in warning
     assert "bm25_search" not in warning
+
+
+def test_a_non_composable_route_does_not_send_the_model_to_sql() -> None:
+    """The two descriptions arrive in one prompt and must not contradict each other.
+
+    On a plain vector index the SQL tool says ranking by meaning is unavailable, so the
+    search tool telling the model to "rank inside SQL instead" is advice it cannot follow.
+    """
+    text = default_semantic_description(TABLE, COLUMN, composable=False)
+    assert "rank inside SQL instead" not in text
+    assert "not available in SQL here" in text
+    # The cap still has to be stated; only the way around it differs.
+    assert "row limit" in text
+
+
+def test_a_composable_route_still_prefers_the_composed_form() -> None:
+    text = default_semantic_description(TABLE, COLUMN, composable=True)
+    assert "rank inside SQL instead" in text
+
+
+def test_the_semantic_tool_and_the_sql_tool_agree_about_composing(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Pins the contradiction itself, across the two descriptions as actually built."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    plain = vector_index(columns=[COLUMN])
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=[plain])
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    tools = make_hotdata_tools(
+        client,
+        database_id=managed_db.id,
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_columns=["id"],
+        search_embedding=embedding,
+        management_tools=False,
+        describe_tables=False,
+    )
+    described = {tool.name: tool.description or "" for tool in tools}
+    sql = described["hotdata_execute_sql"]
+    search = described["hotdata_search_semantic"]
+    assert "not available in SQL" in sql
+    assert "rank inside SQL instead" not in search
+
+
+def test_results_carry_the_engines_own_distance_name(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """One value must not have two names: only `_distance` works in SQL the model writes."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    assert "_distance" in (tool.description or "")
+    assert "'distance' column" not in (tool.description or "")
+    tool.invoke({"query": QUERY})
+    assert " AS distance" not in executed_sql(client)
