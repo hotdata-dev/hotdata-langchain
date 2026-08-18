@@ -1,6 +1,6 @@
 # hotdata-langchain
 
-Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, full-text search indexed columns and work with managed databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
+Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, search indexed columns by text relevance or by meaning, and work with managed databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
 
 ## Install
 
@@ -48,7 +48,8 @@ id of each.
 | `hotdata_create_managed_database` | Create a new managed database and return its id |
 | `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
 | `hotdata_describe_tables` | List tables, or one table's columns, types and how many rows hold a value |
-| `hotdata_search_text` | Full-text search an indexed column, ranked by relevance (opt-in — see below) |
+| `hotdata_search_text` | Search an indexed column by text relevance (opt-in — see below) |
+| `hotdata_search_semantic` | Search an indexed column by meaning; replaces the above when the column carries a vector index |
 
 The descriptions carry the engine's contract — dialect, what SQL can and cannot do, and where
 to look things up — so an agent does not need a system prompt explaining the query engine.
@@ -193,16 +194,16 @@ This narrows what the fetch can reach rather than sealing it: the address is res
 check and again by the HTTP client, so a DNS server answering differently each time can still
 get through. A deployment on an untrusted network wants an egress proxy in front of this.
 
-## Full-text search
+## Search
 
-Point the agent at a text column carrying a BM25 index and it gets a search tool alongside SQL:
+Point the agent at an indexed column and it gets a search tool alongside SQL:
 
 ```python
 tools = hl.make_hotdata_tools(
     client,
     database_id="dbid...",
     search_table="default.public.listings",   # catalog.schema.table
-    search_column="description",              # must have a BM25 index
+    search_column="description",              # must carry a search index
     search_columns=["id", "name", "price", "description"],  # what each hit returns
     search_k=5,
 )
@@ -217,6 +218,52 @@ Rows come back ranked, each with a `score`. The agent supplies only `query` and 
 the tool surface lets an agent discover which columns are indexed, and the engine errors
 outright rather than falling back to a scan when a column has no BM25 index.
 
+### Text or meaning, decided by the index
+
+Which kind of search you get is read off the column's indexes when the tools are built,
+because indexes are invisible to SQL and the control plane is the only thing that can answer.
+A BM25 index means text relevance; a vector index means closeness in meaning. You get one
+tool either way — a model asked to choose between two search tools is being handed an
+implementation detail as a decision.
+
+| Index on the column | Tool | Ranking column | Needs an `Embeddings` |
+|---|---|---|---|
+| BM25 | `hotdata_search_text` | `score`, highest first | no |
+| vector, provider-backed | `hotdata_search_semantic` | `distance`, lowest first | no — the engine embeds the query |
+| vector, plain | `hotdata_search_semantic` | `distance`, lowest first | **yes**, pass `search_embedding=` |
+
+A *provider-backed* index is one built over a text column with an embedding provider: the
+engine embeds the column and the query, so nothing is needed on this side. A *plain* index is
+built over a column that already holds vectors, and the engine has no record of how they were
+produced — so the query must be embedded here, with the same model the column was written
+with:
+
+```python
+tools = hl.make_hotdata_tools(
+    client,
+    database_id="dbid...",
+    search_table="default.public.listing_corpus",
+    search_column="embedding",
+    search_columns=["id", "content"],   # the vector column is never returned
+    search_embedding=OpenAIEmbeddings(model="text-embedding-3-small"),
+)
+```
+
+Passing `search_embedding` for a plain index is not optional: without it the tools refuse to
+build, rather than failing on the agent's first query with a type error it cannot act on.
+`search_strategy="text"` or `"semantic"` forces a route and raises if the column cannot serve
+it.
+
+The two never collide on one column. BM25 indexes a text column and a plain vector index a
+vector column, so they land on different columns of a table; and a provider-backed vector
+index cannot share a table with any other index at all. See
+[docs/engine-contract.md](docs/engine-contract.md) for what that restriction costs.
+
+The SQL tool's description follows the same route, so it names `vector_search` where the
+column is searchable by meaning and `bm25_search` where it is searchable by text. Both
+descriptions reach the model in one prompt, and pointing it at a function with no index on
+the column it was just handed is a failure no test would catch.
+
 `search_columns` is optional. Left unset, a hit carries the searched column plus the table's
 `id`, so it can be joined back to the table it came from — a hit holding only the matched text
 references nothing. The key column is looked up once when the tools are built and dropped if
@@ -226,7 +273,10 @@ the table has no such column; `search_key_column="listing_id"` names a different
 `k` is governed by `max_rows`: a larger `k` from the model is cut to it *before* the search
 runs, so those rows are never ranked at all. The ceiling is stated in the tool's description
 and in its `k` argument, and a call that was cut says so in `metadata.client_warning`. To
-reason over a wider cohort, call `bm25_search` inside SQL and aggregate there.
+reason over a wider cohort, call `bm25_search` (or `vector_search`, on a semantic route)
+inside SQL and aggregate there. A plain vector index has no such composed form — writing it
+needs a query vector, which SQL cannot express — and the SQL tool's description says so
+rather than advertising a route the agent cannot take.
 
 A managed database's tables read as `default.<schema>.<table>`. An **attached** source's do
 not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not

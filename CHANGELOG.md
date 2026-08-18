@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Semantic search. A column carrying a vector index gets a `hotdata_search_semantic` tool that
+  ranks rows by closeness in meaning, alongside the existing text-relevance route
+  ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)).
+- The retrieval route is read from the column's indexes when the tools are built, rather than
+  chosen by the caller. Indexes are invisible to SQL, so `hotdata_langchain.indexes` asks the
+  control plane once and reports each column's capability. Text and meaning cannot collide on
+  one column in any configuration the engine permits, so the routing needs no preference rule.
+- `search_embedding=` on `make_hotdata_tools`, required only for a *plain* vector index — one
+  built over a column that already holds vectors, where the engine has no record of how they
+  were produced and cannot embed a query to match them. An index built with an embedding
+  provider needs nothing on this side: the engine embeds both the column and the query. Omitting
+  it where it is required fails when the tools are built, not on the agent's first query.
+- `search_strategy=` to force a route and raise if the column cannot serve it.
+
+### Changed
+
+- A pinned corpus whose column carries a vector index now gets the semantic tool rather than
+  the text one, and the tool is named `hotdata_search_semantic` rather than
+  `hotdata_search_text`. The name reaches the model, and calling a search that ranks by meaning
+  "search_text" states the one thing it does not do. Pass `search_tool_name=` to pin a name, or
+  `search_strategy="text"` to keep the previous route.
+- The SQL tool's description follows the retrieval route, naming `vector_search` where the
+  pinned column is searchable by meaning and `bm25_search` where it is searchable by text. Both
+  descriptions reach the model in the same prompt, so the previous fixed wording would have told
+  it to compose a function that has no index on the column it was just given. Where the route
+  has no composed form at all — a plain vector index, which would need a query vector SQL cannot
+  express — the description says so instead of advertising it.
+- The semantic route's truncation and `k`-clamp warnings name `vector_search` rather than
+  `bm25_search`, for the same reason.
+
+### Fixed
+
+- `docs/engine-contract.md` claimed `vector_search` takes only a vector, so a meaning-defined
+  cohort could not be expressed in SQL by an agent unaided. That holds for a plain vector index
+  and not for a provider-backed one, where `vector_search(table, column, 'query text', k)` takes
+  text and composes exactly like `bm25_search`. Verified against the live engine, along with the
+  restriction that makes this awkward: a provider-backed index cannot coexist with any other
+  index on its table, so the arrangement that makes semantic search free is the one that forbids
+  BM25 beside it.
+
 ## [0.9.0] - 2026-08-18
 
 ### Added

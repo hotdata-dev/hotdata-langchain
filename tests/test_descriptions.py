@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from hotdata_langchain.indexes import SEMANTIC, SearchIndex
+from hotdata_langchain.search import SearchRoute
 from hotdata_langchain.tools import make_hotdata_tools, sql_tool_description
 
 TABLE = "default.public.listings"
@@ -244,3 +246,69 @@ def test_load_description_drops_the_public_url_rule_when_it_does_not_apply() -> 
     """A deployment loading from an internal store would be told the opposite of the truth."""
     description = descriptions(allow_private_hosts=True)["hotdata_load_managed_table"]
     assert "not an internal address" not in description
+
+
+# --- the SQL description follows the retrieval route ------------------------------
+
+
+def _semantic_route(*, embeds_query: bool = True) -> SearchRoute:
+    return SearchRoute(
+        SEMANTIC,
+        SearchIndex(
+            column=COLUMN,
+            kind=SEMANTIC,
+            index_type="vector",
+            ready=True,
+            metric="cosine",
+            vector_column=f"{COLUMN}_embedding",
+            embeds_query=embeds_query,
+        ),
+    )
+
+
+def test_sql_description_never_names_bm25_on_a_semantic_column() -> None:
+    """Both descriptions reach the model in one prompt and must agree.
+
+    Naming bm25_search beside a tool that ranks by meaning tells the model to call a
+    function that has no index on the column it was just handed.
+    """
+    description = sql_tool_description(
+        "hotdata_search_semantic",
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_route=_semantic_route(),
+    )
+    assert "bm25_search" not in description
+    assert f"vector_search('{TABLE}', '{COLUMN}'" in description
+
+
+def test_sql_description_carries_the_sort_semantic_search_needs() -> None:
+    """vector_search returns rows unsorted; a trailing LIMIT then takes arbitrary ones."""
+    description = sql_tool_description(
+        "hotdata_search_semantic",
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_route=_semantic_route(),
+    )
+    assert "ORDER BY _distance ASC" in description
+
+
+def test_sql_description_offers_no_composed_form_it_cannot_write() -> None:
+    """A plain vector index needs a query vector, which SQL cannot express."""
+    description = sql_tool_description(
+        "hotdata_search_semantic",
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_route=_semantic_route(embeds_query=False),
+    )
+    assert "vector_search(" not in description
+    assert "not available in SQL here" in description
+
+
+def test_sql_description_keeps_bm25_wording_without_a_route() -> None:
+    """The text route is the default, and nothing about it changed."""
+    description = sql_tool_description(
+        "hotdata_search_text", search_table=TABLE, search_column=COLUMN
+    )
+    assert f"bm25_search('{TABLE}', '{COLUMN}'" in description
+    assert "vector_search" not in description

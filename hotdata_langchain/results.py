@@ -25,11 +25,23 @@ CLIENT_WARNING_KEY = "client_warning"
 #: What to do about a truncated result when the caller writes the SQL itself.
 SQL_REMEDY = "aggregate in SQL, narrow the query, or page with LIMIT/OFFSET starting at {returned}"
 
+
+def search_remedy(function: str = "bm25_search") -> str:
+    """Return the truncation remedy for a tool that takes a search string, not SQL.
+
+    ``function`` names the table function the caller should compose with, which differs
+    per retrieval route: ``bm25_search`` for text relevance, ``vector_search`` for
+    meaning. Naming the wrong one sends the model to a function that will reject the
+    column it was given.
+    """
+    return (
+        "these are the top matches rather than the whole set, so to reason over a wider "
+        f"cohort call {function} inside SQL and aggregate there"
+    )
+
+
 #: The same, for a tool that composes its own query and takes only a search string.
-SEARCH_REMEDY = (
-    "these are the top matches rather than the whole set, so to reason over a wider "
-    "cohort call bm25_search inside SQL and aggregate there"
-)
+SEARCH_REMEDY = search_remedy()
 
 
 def truncation_warning(

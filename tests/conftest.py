@@ -101,15 +101,58 @@ def vector_index(
     name: str = "vectors_embedding_vector",
     metric: str | None = "cosine",
     status: str = "ready",
+    columns: list[str] | None = None,
+    source_column: str | None = None,
 ) -> SimpleNamespace:
-    """An entry as ``IndexesApi.list_indexes`` reports one."""
+    """An entry as ``IndexesApi.list_indexes`` reports one.
+
+    ``source_column`` set is a provider-backed index: the engine embedded that text
+    column into ``columns[0]`` and will embed a query to match. Left unset it is a plain
+    index over a column that already held vectors, which the caller must query with a
+    vector of its own.
+    """
     return SimpleNamespace(
         index_name=name,
         index_type="vector",
-        columns=["embedding"],
+        columns=columns if columns is not None else ["embedding"],
         metric=metric,
         status=status,
+        source_column=source_column,
     )
+
+
+def bm25_index(
+    name: str = "listings_description_bm25",
+    column: str = "description",
+    status: str = "ready",
+) -> SimpleNamespace:
+    """A BM25 entry as ``IndexesApi.list_indexes`` reports one.
+
+    Carries ``metric=None`` and ``source_column=None`` because that is what the server
+    sends for a text index, and the routing reads both.
+    """
+    return SimpleNamespace(
+        index_name=name,
+        index_type="bm25",
+        columns=[column],
+        metric=None,
+        status=status,
+        source_column=None,
+    )
+
+
+@pytest.fixture
+def search_indexes() -> Iterator[MagicMock]:
+    """Patch the indexes API the search routing reads, reporting none by default.
+
+    Separate from ``indexes_api`` because the two patch different modules: the vector
+    store imports ``IndexesApi`` into its own namespace and this reads it through
+    ``hotdata_langchain.indexes``. A test that patched only one would leave the other
+    live against a MagicMock client.
+    """
+    with patch("hotdata_langchain.indexes.IndexesApi") as api:
+        api.return_value.list_indexes.return_value = SimpleNamespace(indexes=[])
+        yield api
 
 
 @pytest.fixture

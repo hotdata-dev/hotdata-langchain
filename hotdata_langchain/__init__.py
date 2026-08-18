@@ -23,6 +23,14 @@ from hotdata_langchain.errors import (
     error_feedback,
     with_error_feedback,
 )
+from hotdata_langchain.indexes import (
+    CAPABILITY_PHRASES,
+    SEMANTIC,
+    TEXT,
+    SearchIndex,
+    capabilities_by_column,
+    list_search_indexes,
+)
 from hotdata_langchain.results import (
     CLIENT_WARNING_KEY,
     result_json,
@@ -37,10 +45,15 @@ from hotdata_langchain.search import (
     DEFAULT_KEY_COLUMN,
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_SEARCH_TOOL_NAME,
+    DISTANCE_ALIAS,
+    DISTANCE_COLUMN,
     SCORE_COLUMN,
     bm25_search_json,
     bm25_search_sql,
     make_hotdata_search_tool,
+    semantic_search_json,
+    vector_distance_sql,
+    vector_search_sql,
 )
 from hotdata_langchain.tools import (
     DEFAULT_CREATE_DATABASE_TOOL_NAME,
@@ -57,6 +70,7 @@ from hotdata_langchain.vectorstore import (
 )
 
 __all__ = [
+    "CAPABILITY_PHRASES",
     "CLIENT_WARNING_KEY",
     "DEFAULT_CREATE_DATABASE_TOOL_NAME",
     "DEFAULT_DESCRIBE_TOOL_NAME",
@@ -66,16 +80,22 @@ __all__ = [
     "DEFAULT_SEARCH_LIMIT",
     "DEFAULT_SEARCH_TOOL_NAME",
     "DEFAULT_SQL_TOOL_NAME",
+    "DISTANCE_ALIAS",
+    "DISTANCE_COLUMN",
     "DISTANCE_FUNCTIONS",
     "SCORE_COLUMN",
+    "SEMANTIC",
+    "TEXT",
     "HotdataClient",
     "HotdataToolError",
     "HotdataVectorStore",
     "ManagedDatabase",
     "QueryResult",
+    "SearchIndex",
     "__version__",
     "bm25_search_json",
     "bm25_search_sql",
+    "capabilities_by_column",
     "create_managed_database",
     "describe_tables_json",
     "engine_error_message",
@@ -83,6 +103,7 @@ __all__ = [
     "execute_sql_json",
     "from_env",
     "list_managed_databases_json",
+    "list_search_indexes",
     "load_managed_table",
     "load_result_summary",
     "make_hotdata_describe_tables_tool",
@@ -93,5 +114,8 @@ __all__ = [
     "result_json",
     "result_payload",
     "result_rows_for_llm",
+    "semantic_search_json",
+    "vector_distance_sql",
+    "vector_search_sql",
     "with_error_feedback",
 ]
