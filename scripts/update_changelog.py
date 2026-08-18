@@ -19,9 +19,11 @@ def update_changelog_text(text: str, ver: str, date: str) -> str:
             section = f"## [{ver}] - {date}\n\n{body}\n\n"
         else:
             section = f"## [{ver}] - {date}\n\n### Changed\n\n- Release {ver}\n\n"
+        # The pattern's `\s*\n` already consumes the blank line under the heading, so the
+        # replacement writes the separator rather than adding one to it.
         return re.sub(
-            r"^(## \[Unreleased\]\s*\n)(.*?)(?=^## \[|\Z)",
-            lambda match: match.group(1) + "\n" + section,
+            r"^## \[Unreleased\]\s*\n(.*?)(?=^## \[|\Z)",
+            lambda _: f"## [Unreleased]\n\n{section}",
             text,
             count=1,
             flags=re.M | re.S,

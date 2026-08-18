@@ -46,3 +46,20 @@ def test_populated_unreleased_moves_notes_into_new_section():
     assert "- New widget." in result
     assert result.index("- New widget.") < result.index("## [0.1.1]")
     assert "The format is based on [Keep a Changelog]" in result.split("## [0.1.2]")[0]
+
+
+def test_one_blank_line_separates_unreleased_from_the_new_section():
+    """Every other section here is separated by one, and this ran on every release."""
+    result = _update_changelog_text(HEADER, "0.1.2", "2026-05-20")
+    assert "## [Unreleased]\n\n## [0.1.2]" in result
+    assert "\n\n\n" not in result
+
+
+def test_notes_keep_one_blank_line_before_the_previous_release():
+    text = HEADER.replace(
+        "## [Unreleased]\n\n",
+        "## [Unreleased]\n\n### Added\n\n- New widget.\n\n\n",
+    )
+    result = _update_changelog_text(text, "0.1.2", "2026-05-20")
+    assert "- New widget.\n\n## [0.1.1]" in result
+    assert "\n\n\n" not in result

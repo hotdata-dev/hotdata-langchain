@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-18
+
 ### Added
 
 - `metadata.client_warning`, a warning channel of this package's own, on the SQL and search
@@ -60,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A table declared on a managed database but never loaded is reported as declared and empty
   rather than as a missing table. It has no rows in `information_schema.columns`, so its schema
   lookup was indistinguishable from a table that does not exist.
-
 
 ## [0.8.0] - 2026-08-14
 
