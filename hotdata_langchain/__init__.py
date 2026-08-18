@@ -18,9 +18,15 @@ from hotdata_langchain.databases import (
     resolve_database_by_id,
 )
 from hotdata_langchain.errors import (
+    HotdataToolError,
     engine_error_message,
     error_feedback,
     with_error_feedback,
+)
+from hotdata_langchain.results import (
+    CLIENT_WARNING_KEY,
+    result_json,
+    result_payload,
 )
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
@@ -28,6 +34,7 @@ from hotdata_langchain.schema import (
     make_hotdata_describe_tables_tool,
 )
 from hotdata_langchain.search import (
+    DEFAULT_KEY_COLUMN,
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_SEARCH_TOOL_NAME,
     SCORE_COLUMN,
@@ -50,8 +57,10 @@ from hotdata_langchain.vectorstore import (
 )
 
 __all__ = [
+    "CLIENT_WARNING_KEY",
     "DEFAULT_CREATE_DATABASE_TOOL_NAME",
     "DEFAULT_DESCRIBE_TOOL_NAME",
+    "DEFAULT_KEY_COLUMN",
     "DEFAULT_LIST_DATABASES_TOOL_NAME",
     "DEFAULT_LOAD_TABLE_TOOL_NAME",
     "DEFAULT_SEARCH_LIMIT",
@@ -60,6 +69,7 @@ __all__ = [
     "DISTANCE_FUNCTIONS",
     "SCORE_COLUMN",
     "HotdataClient",
+    "HotdataToolError",
     "HotdataVectorStore",
     "ManagedDatabase",
     "QueryResult",
@@ -80,6 +90,8 @@ __all__ = [
     "make_hotdata_tools",
     "managed_database_summary",
     "resolve_database_by_id",
+    "result_json",
+    "result_payload",
     "result_rows_for_llm",
     "with_error_feedback",
 ]

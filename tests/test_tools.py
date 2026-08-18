@@ -16,6 +16,8 @@ from hotdata_langchain.databases import (
     list_managed_databases_json,
     load_managed_table,
 )
+from hotdata_langchain.errors import HotdataToolError, engine_error_message
+from hotdata_langchain.results import CLIENT_WARNING_KEY
 from hotdata_langchain.schema import DEFAULT_DESCRIBE_TOOL_NAME
 from hotdata_langchain.search import DEFAULT_SEARCH_TOOL_NAME
 from hotdata_langchain.tools import (
@@ -381,3 +383,78 @@ def test_the_sql_tool_stays_first_whichever_tools_are_included(mock_client):
     for kwargs in ({}, {"management_tools": False}, {"describe_tables": False}):
         tools = make_hotdata_tools(mock_client, **kwargs)
         assert tools[0].name == DEFAULT_SQL_TOOL_NAME
+
+
+# --- Results that succeeded without doing what they said ----------------------------
+
+
+def test_sql_result_warns_about_an_uninterpreted_format_pattern(mock_client):
+    """The measured failure: correct numbers labelled with the literal text 'YYYY-MM-DD'."""
+    payload = json.loads(
+        execute_sql_json(mock_client, "SELECT to_char(start_time, 'YYYY-MM-DD') AS day FROM spans")
+    )
+    assert "'YYYY-MM-DD'" in payload["metadata"][CLIENT_WARNING_KEY]
+
+
+def test_a_correct_query_carries_no_client_warning(mock_client):
+    payload = json.loads(execute_sql_json(mock_client, "SELECT to_char(d, '%Y-%m-%d') FROM t"))
+    assert CLIENT_WARNING_KEY not in payload["metadata"]
+
+
+def test_capped_sql_result_says_how_many_rows_matched(mock_client):
+    payload = json.loads(execute_sql_json(mock_client, "SELECT n FROM t", max_rows=1))
+    assert len(payload["rows"]) == 1
+    assert "2" in payload["metadata"][CLIENT_WARNING_KEY]
+
+
+def test_sql_description_states_the_row_cap(mock_client):
+    """A model that inferred the cap itself guessed the boundary and re-read four rows."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client, max_rows=250)}
+    description = tools[DEFAULT_SQL_TOOL_NAME].description or ""
+    assert "250" in description
+    assert "row_count" in description
+
+
+def test_tool_arguments_carry_descriptions(mock_client):
+    """Until now the schema told the model a parameter's type and nothing else."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    assert "description" in tools[DEFAULT_SQL_TOOL_NAME].args["sql"]
+    assert "description" in tools[DEFAULT_LOAD_TABLE_TOOL_NAME].args["database_id"]
+    assert "description" in tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].args["name"]
+
+
+def test_tool_descriptions_are_unchanged_by_parsing_the_docstrings(mock_client):
+    """The explicit description= is what reaches the model, not the docstring summary."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    assert (tools[DEFAULT_SQL_TOOL_NAME].description or "").startswith("Run a read-only SQL query")
+
+
+def test_a_failing_query_still_reports_the_format_pattern(mock_client):
+    """Applying a Postgres template to a column returns only 'an internal server error'."""
+    mock_client.execute_sql.side_effect = RuntimeError("An internal server error occurred.")
+    sql = "SELECT to_char(to_date(first_review, 'YYYY-MM-DD'), 'YYYY-MM') FROM listings"
+    with pytest.raises(HotdataToolError) as raised:
+        execute_sql_json(mock_client, sql)
+    message = engine_error_message(raised.value)
+    assert "'YYYY-MM-DD'" in message
+    assert message.startswith("to_char")
+    assert "An internal server error occurred." in message
+
+
+def test_a_failure_with_nothing_to_add_is_raised_untouched(mock_client):
+    """Wrapping every failure would put this package's name on errors it knows nothing about."""
+    original = RuntimeError("Bad Request")
+    mock_client.execute_sql.side_effect = original
+    with pytest.raises(RuntimeError) as raised:
+        execute_sql_json(mock_client, "SELECT nope FROM listings")
+    assert raised.value is original
+
+
+def test_the_format_hint_survives_the_error_feedback_wrapper(mock_client):
+    """It is the failure path the model reads, so the hint has to reach the payload."""
+    mock_client.execute_sql.side_effect = RuntimeError("An internal server error occurred.")
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client, handle_errors=True)}
+    payload = json.loads(
+        tools[DEFAULT_SQL_TOOL_NAME].invoke({"sql": "SELECT to_char(d, 'YYYY-MM-DD') FROM t"})
+    )
+    assert "Write '%Y-%m-%d' instead." in payload["error"]

@@ -47,7 +47,7 @@ id of each.
 | `hotdata_list_managed_databases` | List available managed databases, with the id of each |
 | `hotdata_create_managed_database` | Create a new managed database and return its id |
 | `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
-| `hotdata_describe_tables` | List tables, or one table's columns and types |
+| `hotdata_describe_tables` | List tables, or one table's columns, types and how many rows hold a value |
 | `hotdata_search_text` | Full-text search an indexed column, ranked by relevance (opt-in — see below) |
 
 The descriptions carry the engine's contract — dialect, what SQL can and cannot do, and where
@@ -83,7 +83,10 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...", handle_errors=True)
 
 What reaches the model is the engine's own message, not the framework's `RuntimeError("Bad
 Request")` — `Invalid function 'date_sub'. Did you mean 'date_bin'?` is something a model can
-act on, and was observed correcting its query on the next call. `hl.engine_error_message(exc)`
+act on, and was observed correcting its query on the next call. The exception is a failure this
+package can explain better than the engine can, such as a [date format
+pattern](#warnings-about-results-that-are-not-what-they-look-like) that will not be
+interpreted: that message leads, with the engine's after it. `hl.engine_error_message(exc)`
 exposes that lookup on its own, and `hl.with_error_feedback(tools)` applies the same wrapping to
 tools built elsewhere, such as a retriever tool registered alongside these:
 
@@ -116,6 +119,29 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=Fal
 It reads `information_schema` in whichever database the tools are scoped to, so it needs no
 extra permissions. With it turned off, the SQL tool's description tells the agent to query
 `information_schema` directly instead.
+
+Each column also reports `non_null`, how many of the table's rows hold a value in it,
+alongside the table's `row_count`:
+
+```json
+{
+  "table": "public.listings",
+  "row_count": 7535,
+  "columns": [
+    {"name": "id", "type": "Int64", "non_null": 7535},
+    {"name": "price", "type": "Float64", "non_null": 0}
+  ]
+}
+```
+
+A type alone says a column exists, not that anything is in it — an agent given only types was
+measured recommending an analysis of a column that is NULL on every row. The counts cost one
+aggregate query per table described; pass `describe_column_stats=False` where describing a
+table must not scan it.
+
+A table that is declared on the database but has never been loaded has no columns at all in
+`information_schema`, which reads as a missing table. It is reported as declared and empty
+instead, which is the state a load fixes.
 
 ## Calling tools directly
 
@@ -190,6 +216,17 @@ Rows come back ranked, each with a `score`. The agent supplies only `query` and 
 `k`; the table and column are fixed when you build the tool. That is deliberate — nothing in
 the tool surface lets an agent discover which columns are indexed, and the engine errors
 outright rather than falling back to a scan when a column has no BM25 index.
+
+`search_columns` is optional. Left unset, a hit carries the searched column plus the table's
+`id`, so it can be joined back to the table it came from — a hit holding only the matched text
+references nothing. The key column is looked up once when the tools are built and dropped if
+the table has no such column; `search_key_column="listing_id"` names a different one, and
+`search_key_column=None` returns the searched column alone.
+
+`k` is governed by `max_rows`: a larger `k` from the model is cut to it *before* the search
+runs, so those rows are never ranked at all. The ceiling is stated in the tool's description
+and in its `k` argument, and a call that was cut says so in `metadata.client_warning`. To
+reason over a wider cohort, call `bm25_search` inside SQL and aggregate there.
 
 A managed database's tables read as `default.<schema>.<table>`. An **attached** source's do
 not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not
@@ -439,6 +476,42 @@ Limit how many rows are returned to the LLM. Useful for keeping responses within
 ```python
 tools = hl.make_hotdata_tools(client, max_rows=50)
 ```
+
+The cap is stated in the SQL tool's description, and `metadata.row_count` is the total the
+query matched *before* it — so a result that was cut says so twice, in the numbers and in
+`metadata.client_warning`.
+
+## Warnings about results that are not what they look like
+
+Some calls succeed while quietly meaning something other than what was asked: rows cut at the
+cap, a `k` clamped before the search ran, a date format pattern the engine will not interpret.
+Each of those returns an ordinary successful result, so nothing signals that anything went
+wrong. They are reported in `metadata.client_warning`:
+
+```json
+{
+  "metadata": {
+    "row_count": 7535,
+    "warning": null,
+    "client_warning": "Returned the first 100 rows of the 7535 this query matched. ..."
+  },
+  "rows": ["… the first 100 …"]
+}
+```
+
+`warning` is the engine's own field and is passed through untouched; `client_warning` is this
+package's, so the two never overwrite each other and a consumer can tell which side noticed.
+The key is absent when there is nothing to say.
+
+The format check is the one worth knowing about outside an agent loop. The engine's date
+patterns are strftime, so `to_char(d, 'YYYY-MM-DD')` is not a pattern at all — it returns the
+literal text `YYYY-MM-DD` on every row, with no error. Any format pattern containing no `%`
+is flagged, with the strftime equivalent when it can be worked out.
+
+The same query applied to a *column* rather than a literal fails instead of returning a wrong
+value, and the engine answers with nothing more specific than an internal error. So the hint
+is raised on that path too, as a `HotdataToolError` carrying it ahead of the engine's message
+— which is what `handle_errors=True` then hands to the model.
 
 ## Run the examples
 

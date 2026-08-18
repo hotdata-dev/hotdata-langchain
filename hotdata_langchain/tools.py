@@ -9,6 +9,7 @@ from typing import Any
 from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, ManagedDatabase, QueryResult
 from langchain_core.tools import StructuredTool
 
+from hotdata_langchain._sql import format_pattern_warnings
 from hotdata_langchain.databases import (
     create_managed_database,
     list_managed_databases_json,
@@ -19,12 +20,14 @@ from hotdata_langchain.databases import (
     query_scope,
     resolve_database_by_id,
 )
-from hotdata_langchain.errors import with_error_feedback
+from hotdata_langchain.errors import HotdataToolError, engine_error_message, with_error_feedback
+from hotdata_langchain.results import result_json
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
     make_hotdata_describe_tables_tool,
 )
 from hotdata_langchain.search import (
+    DEFAULT_KEY_COLUMN,
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_SEARCH_TOOL_NAME,
     make_hotdata_search_tool,
@@ -43,6 +46,7 @@ def sql_tool_description(
     search_table: str | None = None,
     search_column: str | None = None,
     catalogs: Sequence[str] | None = None,
+    max_rows: int | None = None,
 ) -> str:
     """Return the agent-facing description for the SQL tool.
 
@@ -89,6 +93,11 @@ def sql_tool_description(
     that it echoes. Echoing is a current defect that the engine may fix, so asserting it
     would put a false claim in the model's contract the day it is fixed. Behaviour that is
     being corrected upstream is stated as an absence of a guarantee, never as a rule.
+
+    ``max_rows`` states the row cap and what ``row_count`` counts. The gap between the two
+    is arithmetic a model can do — one was measured spotting it and paginating unprompted
+    — but nothing said where the cap fell, so it guessed the boundary and re-read rows it
+    already had. The number is stated rather than left to be discovered.
     """
     if search_table and search_column:
         bm25_example = (
@@ -139,6 +148,17 @@ def sql_tool_description(
             "catalog name: a managed database answers to 'default', an attached source "
             "answers to its own name."
         )
+    row_cap = (
+        ""
+        if max_rows is None
+        else (
+            f"At most {max_rows} rows come back. metadata.row_count is how many the query "
+            f"matched before that cap, so a row_count above the number of rows you "
+            f"received means you are reading a prefix of the answer: aggregate in SQL "
+            f"when the question is about the whole set, and page with LIMIT/OFFSET only "
+            f"when you genuinely need the rest of the rows."
+        )
+    )
     return (
         "Run a read-only SQL query and return the rows as JSON. The engine is Apache "
         "DataFusion, whose SQL follows PostgreSQL closely: joins, CTEs, subqueries, "
@@ -161,7 +181,7 @@ def sql_tool_description(
         f"Address tables with all three parts: catalog.schema.table. {catalog_rule} A "
         "two-part schema.table reference resolves to the same rows but is not always "
         "index-accelerated, so write the full form. "
-        f"{discovery}."
+        f"{discovery}." + (f"\n{row_cap}" if row_cap else "")
     )
 
 
@@ -180,13 +200,28 @@ def execute_sql_json(
 
     ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
     with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+
+    ``metadata.client_warning`` carries anything this package noticed about a call that
+    succeeded without doing what it said: rows capped at ``max_rows``, or a date/time
+    format pattern the engine will not interpret. The engine's own
+    ``metadata.warning`` is separate and passed through untouched.
+
+    A format pattern that makes the query *fail* is reported the same way, in the
+    exception's message and ahead of the engine's own. That is the case where the
+    package's read matters most: applying a PostgreSQL template to a column, rather than
+    to a literal, was measured returning nothing more specific than "An internal server
+    error occurred", so the model has only this to work from.
     """
-    result = client.execute_sql(sql, database=query_scope(database))
-    payload = {
-        "metadata": result.metadata_dict(),
-        "rows": result.to_records(max_rows=max_rows),
-    }
-    return json.dumps(payload, indent=2)
+    warnings = format_pattern_warnings(sql)
+    try:
+        result = client.execute_sql(sql, database=query_scope(database))
+    except Exception as exc:
+        if not warnings:
+            raise
+        raise HotdataToolError(
+            " ".join([*warnings, f"The engine reported: {engine_error_message(exc)}"])
+        ) from exc
+    return result_json(result, max_rows=max_rows, warnings=warnings)
 
 
 def make_hotdata_tools(
@@ -197,9 +232,11 @@ def make_hotdata_tools(
     search_table: str | None = None,
     search_column: str | None = None,
     search_columns: Sequence[str] | None = None,
+    search_key_column: str | None = DEFAULT_KEY_COLUMN,
     search_k: int = DEFAULT_SEARCH_LIMIT,
     search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
     describe_tables: bool = True,
+    describe_column_stats: bool = True,
     management_tools: bool = True,
     handle_errors: bool = False,
     allow_private_hosts: bool = False,
@@ -217,6 +254,9 @@ def make_hotdata_tools(
     ``describe_tables`` (on by default) adds a schema-introspection tool, so the agent
     can look up tables and columns instead of guessing them. It reads
     ``information_schema`` in whichever database the tools are scoped to.
+    ``describe_column_stats`` (on by default) has that tool also report how many rows
+    hold a value in each column, so an empty column is visible as such rather than as an
+    ordinary typed one; it costs one aggregate query per table described.
 
     ``management_tools`` (on by default) adds the three tools that work on managed
     databases themselves — listing, creating and loading. Turn it off for an agent that
@@ -240,8 +280,10 @@ def make_hotdata_tools(
 
     Passing both ``search_table`` and ``search_column`` appends a full-text search tool
     bound to that column, which requires a BM25 index on it. ``search_columns`` selects
-    the columns each hit returns (default: the searched column). Supplying only one of
-    ``search_table``/``search_column`` raises ``ValueError``.
+    the columns each hit returns; left unset, a hit carries the searched column plus
+    ``search_key_column`` when the table has one, so the hit can be joined back to the
+    table it came from. Pass ``search_key_column=None`` for the searched column alone.
+    Supplying only one of ``search_table``/``search_column`` raises ``ValueError``.
 
     For more than one searchable corpus, call
     :func:`hotdata_langchain.search.make_hotdata_search_tool` directly per corpus and
@@ -265,7 +307,12 @@ def make_hotdata_tools(
         catalogs = []
 
     def hotdata_execute_sql(sql: str) -> str:
-        """Run SQL against the Hotdata workspace and return JSON rows."""
+        """Run SQL against the Hotdata workspace and return JSON rows.
+
+        Args:
+            sql: one read-only DataFusion SQL statement. Rows are capped, so read
+                metadata.row_count for the total the query matched before that cap.
+        """
         return execute_sql_json(client, sql, max_rows=max_rows, database=database)
 
     def hotdata_list_managed_databases() -> str:
@@ -277,7 +324,14 @@ def make_hotdata_tools(
         schema_name: str = DEFAULT_SCHEMA,
         tables: str = "",
     ) -> str:
-        """Create a managed database and optionally declare tables (comma/newline separated)."""
+        """Create a managed database and optionally declare tables.
+
+        Args:
+            name: display label for the database; it is not an identifier, and the
+                response carries the id every other tool needs.
+            schema_name: schema the declared tables live in.
+            tables: table names to declare up front, comma- or newline-separated.
+        """
         table_names = [t.strip() for t in tables.replace(",", "\n").splitlines() if t.strip()]
         db = create_managed_database(
             client,
@@ -293,7 +347,17 @@ def make_hotdata_tools(
         file: str,
         schema_name: str = DEFAULT_SCHEMA,
     ) -> str:
-        """Load a parquet file, local or at a URL, into a declared managed table."""
+        """Load a parquet file, local or at a URL, into a declared managed table.
+
+        Args:
+            database_id: id of the target database, as returned by listing or creating
+                one; a database name is rejected.
+            table: name of a table already declared on that database. The load replaces
+                whatever it holds.
+            file: a local filesystem path, or an http:// or https:// URL, to a parquet
+                file. Only parquet is accepted.
+            schema_name: schema the table was declared in.
+        """
         loaded = load_managed_table(
             client,
             database_id=database_id,
@@ -322,7 +386,9 @@ def make_hotdata_tools(
                 search_table=search_table if has_search else None,
                 search_column=search_column if has_search else None,
                 catalogs=catalogs,
+                max_rows=max_rows,
             ),
+            parse_docstring=True,
         ),
     ]
 
@@ -348,6 +414,7 @@ def make_hotdata_tools(
                 "to load up front as a comma- or newline-separated list, so data loads "
                 "straight into them."
             ),
+            parse_docstring=True,
         ),
         StructuredTool.from_function(
             func=hotdata_load_managed_table,
@@ -362,6 +429,7 @@ def make_hotdata_tools(
                 "names are not unique, and this load overwrites the table, so the wrong "
                 "target would destroy data. Only parquet is accepted, not CSV or JSON."
             ),
+            parse_docstring=True,
         ),
     ]
 
@@ -369,7 +437,13 @@ def make_hotdata_tools(
         tools.extend(management)
 
     if describe_tables:
-        tools.append(make_hotdata_describe_tables_tool(client, database_id=database))
+        tools.append(
+            make_hotdata_describe_tables_tool(
+                client,
+                database_id=database,
+                column_stats=describe_column_stats,
+            )
+        )
 
     if has_search:
         assert search_table is not None and search_column is not None
@@ -379,6 +453,7 @@ def make_hotdata_tools(
                 table=search_table,
                 column=search_column,
                 columns=search_columns,
+                key_column=search_key_column,
                 k=search_k,
                 name=search_tool_name,
                 max_rows=max_rows,

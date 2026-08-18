@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.schema import (
     DEFAULT_MAX_COLUMNS,
+    column_stats_sql,
     default_describe_description,
     describe_tables_json,
     make_hotdata_describe_tables_tool,
@@ -47,6 +49,15 @@ def executed_sql(client: MagicMock) -> str:
     sql = client.execute_sql.call_args.args[0]
     assert isinstance(sql, str)
     return sql
+
+
+def executed_sqls(client: MagicMock) -> list[str]:
+    """Every SQL statement the client was asked to run, in order.
+
+    Describing one table runs the schema lookup and then the column-stats aggregate, so
+    a test about the first one cannot read the last call.
+    """
+    return [call.args[0] for call in client.execute_sql.call_args_list]
 
 
 # --- SQL construction -------------------------------------------------------------
@@ -145,7 +156,7 @@ def test_describe_queries_one_row_past_the_cap() -> None:
     client = MagicMock()
     client.execute_sql.return_value = COLUMNS
     describe_tables_json(client, table="listings", max_columns=25)
-    assert executed_sql(client).endswith("LIMIT 26")
+    assert executed_sqls(client)[0].endswith("LIMIT 26")
 
 
 def test_describe_reports_an_unknown_table_rather_than_empty_success() -> None:
@@ -195,7 +206,7 @@ def test_describe_tool_drills_into_one_table() -> None:
     client.execute_sql.return_value = COLUMNS
     tool = make_hotdata_describe_tables_tool(client)
     tool.invoke({"table": "public.listings"})
-    assert "WHERE table_name = 'listings'" in executed_sql(client)
+    assert "WHERE table_name = 'listings'" in executed_sqls(client)[0]
 
 
 def test_describe_tool_is_registered_by_default() -> None:
@@ -218,3 +229,137 @@ def test_sql_description_falls_back_to_information_schema_without_the_tool() -> 
     description = tools["hotdata_execute_sql"].description or ""
     assert "information_schema" in description
     assert "hotdata_describe_tables" not in description
+
+
+# --- Populated-ness -----------------------------------------------------------------
+
+
+STATS = result(["row_count", "n0", "n1"], [[7535, 7535, 0]])
+
+
+def describing_listings(client: MagicMock, **kwargs: object) -> dict[str, object]:
+    """Describe 'listings' with the schema lookup answered first, then the stats query."""
+    client.execute_sql.side_effect = [COLUMNS, STATS]
+    payload = json.loads(describe_tables_json(client, table="listings", **kwargs))  # type: ignore[arg-type]
+    assert isinstance(payload, dict)
+    return payload
+
+
+def test_column_stats_sql_counts_rows_and_every_column() -> None:
+    """One aggregate for the whole table, not one query per column."""
+    assert column_stats_sql("public.listings", ["id", "price"]) == (
+        'SELECT COUNT(*) AS row_count, COUNT("id") AS n0, COUNT("price") AS n1 FROM public.listings'
+    )
+
+
+def test_column_stats_sql_quotes_a_name_the_parser_would_reject() -> None:
+    """A column named 'all' fails to parse unquoted, and would cost every other its count."""
+    assert 'COUNT("all")' in column_stats_sql("public.listings", ["all"])
+
+
+def test_column_stats_sql_cannot_be_escaped_by_a_column_name() -> None:
+    """Names arrive from the table rather than the caller, but they still reach SQL text."""
+    sql = column_stats_sql("public.listings", ["id; DROP TABLE listings"])
+    assert sql.count("SELECT") == 1
+    assert 'COUNT("id; DROP TABLE listings")' in sql
+    with pytest.raises(ValueError, match="double quote or a null byte"):
+        column_stats_sql("public.listings", ['id") AS x, COUNT(*'])
+
+
+def test_describe_reports_how_many_rows_hold_a_value() -> None:
+    """price exists, is typed, and is NULL on all 7,535 rows."""
+    payload = describing_listings(MagicMock())
+    assert payload["row_count"] == 7535
+    assert payload["columns"] == [
+        {"name": "id", "type": "Int64", "non_null": 7535},
+        {"name": "description", "type": "LargeUtf8", "non_null": 0},
+    ]
+
+
+def test_describe_says_what_non_null_means() -> None:
+    payload = describing_listings(MagicMock())
+    assert "empty" in str(payload["column_stats"])
+
+
+def test_column_stats_can_be_turned_off() -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS
+    payload = json.loads(describe_tables_json(client, table="listings", column_stats=False))
+    assert len(executed_sqls(client)) == 1
+    assert "row_count" not in payload
+    assert "non_null" not in payload["columns"][0]
+
+
+def test_a_failed_stats_query_still_describes_the_schema() -> None:
+    """Fails open: the schema is what the tool promised before the counts existed."""
+    client = MagicMock()
+    client.execute_sql.side_effect = [COLUMNS, RuntimeError("scan timed out")]
+    payload = json.loads(describe_tables_json(client, table="listings"))
+    assert [c["name"] for c in payload["columns"]] == ["id", "description"]
+    assert "row_count" not in payload
+
+
+def test_stats_are_counted_over_the_qualified_table() -> None:
+    client = MagicMock()
+    describing_listings(client)
+    assert executed_sqls(client)[1].endswith("FROM public.listings")
+
+
+def test_declared_but_unloaded_table_is_not_reported_as_missing(
+    managed_db: ManagedDatabase,
+) -> None:
+    """It reports zero columns like a missing table, and every query against it fails."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"], []
+    )
+    client.list_managed_tables.return_value = [
+        SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
+    ]
+    payload = json.loads(describe_tables_json(client, table="public.customer", database=managed_db))
+    assert client.list_managed_tables.call_args.kwargs == {"schema": "public"}
+    assert "error" not in payload
+    assert payload["row_count"] == 0
+    assert "no data yet" in payload["note"]
+
+
+def test_a_genuinely_missing_table_still_reports_an_error(managed_db: ManagedDatabase) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"], []
+    )
+    client.list_managed_tables.return_value = []
+    payload = json.loads(describe_tables_json(client, table="nope", database=managed_db))
+    assert "no table named" in payload["error"]
+
+
+def test_describe_description_tells_the_model_to_check_non_null() -> None:
+    assert "non_null" in default_describe_description()
+    assert "non_null" not in default_describe_description(column_stats=False)
+
+
+def test_describe_tool_describes_its_table_argument() -> None:
+    tool = make_hotdata_describe_tables_tool(MagicMock())
+    assert "description" in tool.args["table"]
+
+
+def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
+    """One unquotable name costs its own count, not every other column's."""
+    client = MagicMock()
+    client.execute_sql.side_effect = [
+        result(
+            ["table_schema", "table_name", "column_name", "data_type"],
+            [
+                ["public", "listings", "id", "Int64"],
+                ["public", "listings", 'a "quoted" name', "Float64"],
+            ],
+        ),
+        result(["row_count", "n0"], [[7535, 7535]]),
+    ]
+    payload = json.loads(describe_tables_json(client, table="listings"))
+    assert payload["row_count"] == 7535
+    assert payload["columns"][0]["non_null"] == 7535
+    assert "non_null" not in payload["columns"][1]
+    assert executed_sqls(client)[1] == (
+        'SELECT COUNT(*) AS row_count, COUNT("id") AS n0 FROM public.listings'
+    )
