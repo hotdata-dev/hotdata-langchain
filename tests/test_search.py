@@ -1001,3 +1001,29 @@ def test_the_description_never_promises_a_column_the_hit_will_not_carry(
     assert f"{COLUMN} and name" not in described
     tool.invoke({"query": QUERY})
     assert executed_sql(client).startswith("SELECT id, name, cosine_distance(")
+
+
+def test_the_metric_error_offers_only_remedies_that_resolve(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """strategy='text' is not a way out of a vector column.
+
+    Reaching this error means a plain index, whose column holds vectors and therefore
+    carries no BM25 index — verified against the engine, which answers a text search there
+    with "No BM25 index found on column 'embedding'". Suggesting it would trade a
+    build-time error for a first-invocation one, which is what this check removes.
+    """
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError) as raised:
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric=None)],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+    assert "strategy='text'" not in str(raised.value)
+    assert "explicit metric" in str(raised.value)

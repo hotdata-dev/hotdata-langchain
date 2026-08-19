@@ -592,6 +592,11 @@ def _require_metric(index: SearchIndex, *, column: str) -> DistanceMetric:
     survivable but would raise from inside the tool on every invocation, which is the
     failure shape :func:`_require_embedding` exists to avoid. ``HotdataVectorStore``
     refuses to guess in the same situation, for the same reason.
+
+    Both messages offer only remedies that resolve. ``strategy="text"`` is not one of them:
+    reaching here means a plain index, which sits on a column that already holds vectors,
+    and a vector column carries no BM25 index — so falling back to text would build a tool
+    whose first call fails, which is the deferred failure this function removes.
     """
     if index.embeds_query:
         return "cosine"
@@ -602,9 +607,9 @@ def _require_metric(index: SearchIndex, *, column: str) -> DistanceMetric:
         raise ValueError(
             f"{where} reports no metric, so which distance function serves it cannot be "
             "determined. Guessing would rank by a function the vectors were not indexed "
-            "for, which returns rows in a confident order that means nothing. Pass "
-            "strategy='text' to search this column another way, or rebuild the index with "
-            "an explicit metric."
+            "for, which returns rows in a confident order that means nothing. Rebuild the "
+            "index with an explicit metric, or build a provider-backed index over the "
+            "source text column, which lets the engine resolve the function itself."
         )
     if index.metric not in DISTANCE_FUNCTIONS:
         known = ", ".join(sorted(DISTANCE_FUNCTIONS))

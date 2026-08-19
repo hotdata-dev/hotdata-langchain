@@ -34,8 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A pinned corpus whose column carries a vector index now gets the semantic tool rather than
   the text one, and the tool is named `hotdata_search_semantic` rather than
   `hotdata_search_text`. The name reaches the model, and calling a search that ranks by meaning
-  "search_text" states the one thing it does not do. Pass `search_tool_name=` to pin a name, or
-  `search_strategy="text"` to keep the previous route.
+  "search_text" states the one thing it does not do. Pass `search_tool_name=` to pin the name.
+  There is no route to keep: a column that now searches by meaning cannot also be BM25-indexed,
+  since a provider-backed index excludes every other index on its table and a plain one sits on
+  a vector column, so `search_strategy="text"` there builds a tool the engine rejects on its
+  first call.
 - The SQL tool's description follows the retrieval route, naming `vector_search` where the
   pinned column is searchable by meaning and `bm25_search` where it is searchable by text. Both
   descriptions reach the model in the same prompt, so the previous fixed wording would have told
