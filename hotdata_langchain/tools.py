@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, ManagedDatabase, QueryResult
+from langchain_core.embeddings import Embeddings
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import format_pattern_warnings
@@ -30,7 +31,11 @@ from hotdata_langchain.search import (
     DEFAULT_KEY_COLUMN,
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_SEARCH_TOOL_NAME,
+    DEFAULT_SEMANTIC_TOOL_NAME,
+    SearchRoute,
+    SearchStrategy,
     make_hotdata_search_tool,
+    resolve_search_route,
 )
 
 DEFAULT_SQL_TOOL_NAME = "hotdata_execute_sql"
@@ -45,6 +50,7 @@ def sql_tool_description(
     *,
     search_table: str | None = None,
     search_column: str | None = None,
+    search_route: SearchRoute | None = None,
     catalogs: Sequence[str] | None = None,
     max_rows: int | None = None,
 ) -> str:
@@ -68,7 +74,17 @@ def sql_tool_description(
     limit and quadratic in prompt size. Naming the function, and preferring it whenever
     the answer aggregates over the matches, is what makes the composed form reachable.
     ``search_table``/``search_column`` are woven into the text when known, so the model
-    is told which column is actually BM25-indexed rather than guessing one.
+    is told which column is actually indexed rather than guessing one.
+
+    ``search_route`` says which function that column is reachable through, and the
+    paragraph is rewritten around it. The two descriptions arrive in one prompt, so a SQL
+    description naming ``bm25_search`` beside a tool that ranks by meaning would tell the
+    model to call a function that has no index on the column it was just given. The
+    semantic wording also carries the sort, because ``vector_search`` returns its rows
+    unsorted and a trailing ``LIMIT`` without ``ORDER BY _distance`` was measured
+    returning arbitrary rows rather than the nearest ones. A plain vector index gets no
+    composable paragraph at all: writing that search needs a query vector, which an agent
+    writing SQL cannot produce.
 
     Table references are asked for in full. A two-part `schema.table` reference resolves
     and returns correct rows, but the engine's index-lookup rewrite matches on the
@@ -99,25 +115,60 @@ def sql_tool_description(
     — but nothing said where the cap fell, so it guessed the boundary and re-read rows it
     already had. The number is stated rather than left to be discovered.
     """
-    if search_table and search_column:
-        bm25_example = (
-            f"Here the BM25-indexed column is '{search_column}' on {search_table}, so "
-            f"the call is bm25_search('{search_table}', '{search_column}', "
-            f"'<query text>', <k>)."
+    semantic = search_route is not None and search_route.semantic
+    prefer = (
+        "Prefer this whenever the answer aggregates over the matches rather than listing "
+        "them — it keeps the whole cohort in the query instead of passing ids back as "
+        "literals."
+    )
+    if semantic and search_route is not None and not search_route.composable:
+        # No composable form: this index needs a query vector, which SQL cannot express.
+        composable = (
+            f"Ranking rows by meaning is not available in SQL here — it needs the query "
+            f"as a vector, which SQL cannot express — so use the {search_tool_name} tool "
+            f"for it and aggregate over what it returns."
+            if search_tool_name
+            else "Ranking rows by meaning is not available in SQL here: it needs the "
+            "query as a vector, which SQL cannot express."
+        )
+    elif semantic:
+        if search_table and search_column:
+            example = (
+                f"Here the column searchable by meaning is '{search_column}' on "
+                f"{search_table}, so the call is vector_search('{search_table}', "
+                f"'{search_column}', '<query text>', <k>)."
+            )
+        else:
+            example = (
+                "The call is vector_search('catalog.schema.table', '<column>', "
+                "'<query text>', <k>), over a column that is searchable by meaning."
+            )
+        composable = (
+            f"To rank rows by how close their meaning is to a phrase, call vector_search "
+            f"inside SQL: it is a table-valued function returning the matched rows' "
+            f"columns plus a `_distance` where smaller is nearer, so it joins, groups and "
+            f"nests in subqueries like any other table. {example} Its rows come back "
+            f"unsorted, so add ORDER BY _distance ASC — a trailing LIMIT without that "
+            f"sort returns arbitrary rows rather than the nearest ones. {prefer}"
         )
     else:
-        bm25_example = (
-            "The call is bm25_search('catalog.schema.table', '<column>', '<query text>', "
-            "<k>), over a column that has a BM25 index."
+        if search_table and search_column:
+            example = (
+                f"Here the BM25-indexed column is '{search_column}' on {search_table}, so "
+                f"the call is bm25_search('{search_table}', '{search_column}', "
+                f"'<query text>', <k>)."
+            )
+        else:
+            example = (
+                "The call is bm25_search('catalog.schema.table', '<column>', "
+                "'<query text>', <k>), over a column that has a BM25 index."
+            )
+        composable = (
+            f"To rank rows by how well their text matches a phrase, call bm25_search "
+            f"inside SQL: it is a table-valued function returning the matched rows' "
+            f"columns plus a `score`, so it joins, groups and nests in subqueries like "
+            f"any other table. {example} {prefer}"
         )
-    composable = (
-        f"To rank rows by how well their text matches a phrase, call bm25_search inside "
-        f"SQL: it is a table-valued function returning the matched rows' columns plus a "
-        f"`score`, so it joins, groups and nests in subqueries like any other table. "
-        f"{bm25_example} Prefer this whenever the answer aggregates over the matches "
-        f"rather than listing them — it keeps the whole cohort in the query instead of "
-        f"passing ids back as literals."
-    )
     text_guidance = (
         f"{composable} To simply list the most relevant rows, the "
         f"{search_tool_name} tool does the same ranking and returns them directly. "
@@ -234,7 +285,9 @@ def make_hotdata_tools(
     search_columns: Sequence[str] | None = None,
     search_key_column: str | None = DEFAULT_KEY_COLUMN,
     search_k: int = DEFAULT_SEARCH_LIMIT,
-    search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
+    search_tool_name: str | None = None,
+    search_strategy: SearchStrategy = "auto",
+    search_embedding: Embeddings | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
     management_tools: bool = True,
@@ -278,11 +331,22 @@ def make_hotdata_tools(
     can see. Turn it on when the data genuinely sits on an internal host. See
     :func:`hotdata_langchain.databases.reject_unroutable_url`.
 
-    Passing both ``search_table`` and ``search_column`` appends a full-text search tool
-    bound to that column, which requires a BM25 index on it. ``search_columns`` selects
-    the columns each hit returns; left unset, a hit carries the searched column plus
-    ``search_key_column`` when the table has one, so the hit can be joined back to the
-    table it came from. Pass ``search_key_column=None`` for the searched column alone.
+    Passing both ``search_table`` and ``search_column`` appends a search tool bound to
+    that column, which requires a search index on it. Which kind of search it does is read
+    off that column's indexes here rather than chosen: a BM25 index gives
+    ``hotdata_search_text``, a vector index ``hotdata_search_semantic``. ``search_strategy``
+    forces one; ``"semantic"`` raises if no vector index covers the column, while ``"text"``
+    falls through to the engine's own error, because index introspection fails open.
+    ``search_embedding`` is a LangChain
+    ``Embeddings`` and is required only for a *plain* vector index, where the engine cannot
+    embed the query itself; it must be the same model the column was written with.
+
+    ``search_columns`` selects the columns each hit returns; left unset, a hit carries the
+    searched column plus ``search_key_column`` when the table has one, so the hit can be
+    joined back to the table it came from. Pass ``search_key_column=None`` for the searched
+    column alone. A search over a vector column never returns that column, so there the key
+    carries the hit on its own unless ``search_columns`` names more.
+
     Supplying only one of ``search_table``/``search_column`` raises ``ValueError``.
 
     For more than one searchable corpus, call
@@ -376,15 +440,38 @@ def make_hotdata_tools(
     )
 
     has_search = search_table is not None and search_column is not None
+    # Resolved once, before either description is built: the SQL tool and the search tool
+    # both describe this column to the same model in the same prompt, and resolving twice
+    # is how the two would come to disagree.
+    search_route = (
+        resolve_search_route(
+            client,
+            table=search_table,
+            column=search_column,
+            database=database,
+            strategy=search_strategy,
+            has_embedding=search_embedding is not None,
+        )
+        if has_search and search_table is not None and search_column is not None
+        else None
+    )
+    # The name reaches the model too, so it follows the route: a semantic search called
+    # "search_text" would tell the model it matches wording, which is what it does not do.
+    resolved_search_name = search_tool_name or (
+        DEFAULT_SEMANTIC_TOOL_NAME
+        if search_route is not None and search_route.semantic
+        else DEFAULT_SEARCH_TOOL_NAME
+    )
     tools = [
         StructuredTool.from_function(
             func=hotdata_execute_sql,
             name=DEFAULT_SQL_TOOL_NAME,
             description=sql_tool_description(
-                search_tool_name if has_search else None,
+                resolved_search_name if has_search else None,
                 DEFAULT_DESCRIBE_TOOL_NAME if describe_tables else None,
                 search_table=search_table if has_search else None,
                 search_column=search_column if has_search else None,
+                search_route=search_route,
                 catalogs=catalogs,
                 max_rows=max_rows,
             ),
@@ -455,9 +542,11 @@ def make_hotdata_tools(
                 columns=search_columns,
                 key_column=search_key_column,
                 k=search_k,
-                name=search_tool_name,
+                name=resolved_search_name,
                 max_rows=max_rows,
                 database_id=database,
+                embedding=search_embedding,
+                route=search_route,
             )
         )
 

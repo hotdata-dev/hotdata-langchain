@@ -22,20 +22,18 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.vectorstores import VectorStore
 from langchain_core.vectorstores.utils import maximal_marginal_relevance
 
-from hotdata_langchain._sql import quote_literal, validate_identifier
+from hotdata_langchain._sql import (
+    DISTANCE_FUNCTIONS,
+    DistanceMetric,
+    quote_literal,
+    validate_identifier,
+    vector_literal,
+)
 from hotdata_langchain.databases import resolve_database_by_id
 
 logger = logging.getLogger(__name__)
 
-DistanceMetric = Literal["cosine", "l2", "dot"]
 MetadataColumnType = Literal["string", "int", "float", "bool"]
-
-#: Engine scalar UDF backing each metric. All three return lower-is-closer distances.
-DISTANCE_FUNCTIONS: dict[str, str] = {
-    "cosine": "cosine_distance",
-    "l2": "l2_distance",
-    "dot": "negative_dot_product",
-}
 
 ID_COLUMN = "id"
 CONTENT_COLUMN = "content"
@@ -385,7 +383,7 @@ class HotdataVectorStore(VectorStore):
             raise ValueError(f"k must be >= 1, got {k}")
         if len(embedding) == 0:
             raise ValueError("query embedding must not be empty")
-        vector = "ARRAY[" + ", ".join(repr(float(value)) for value in embedding) + "]"
+        vector = vector_literal(embedding)
         projection = [ID_COLUMN, CONTENT_COLUMN, METADATA_COLUMN]
         if with_vectors:
             projection.append(EMBEDDING_COLUMN)

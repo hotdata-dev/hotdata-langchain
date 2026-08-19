@@ -54,13 +54,23 @@ not two tools the model picks between. `hotdata_search_text`'s description delib
 names no mechanism (a test enforces that it never says "bm25"/"vector"/"hnsw"), so the
 retrieval strategy can change without changing the contract the model was given.
 
-Fusion goes **client-side first**. Measured on a real 3-call agent run: 7,057 ms total, 65%
-in model calls, 35% in tools — but each tool call was ~1,200 ms wall against 49–79 ms of
-engine execution, so ~1,100 ms is round trip. A naive client-side hybrid therefore adds a
-full extra round trip; issuing the two searches concurrently recovers most of it. Engine-side
-`hybrid_search()` would remove it entirely and would benefit `hotdata-ibis` and dlt too, but
-it is the optimization to do *after* the fusion parameters (RRF constant, dedup key,
-tie-breaking) are settled empirically.
+**Corrected 2026-08-18: fusion does not need to go client-side, and cannot always happen at
+all.** This paragraph previously argued for a client-side hybrid on round-trip grounds —
+measured on a real 3-call agent run at 7,057 ms total, ~1,200 ms wall per tool call against
+49–79 ms of engine execution, so ~1,100 ms of it round trip. That measurement stands; the
+conclusion drawn from it does not. RRF is expressible as **one SQL query** using CTEs,
+`ROW_NUMBER() OVER` and `FULL OUTER JOIN`, all of which the engine supports, so the fused
+search costs one round trip rather than two and needs no engine primitive — the
+`hybrid_search()` in [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37) is an
+optimisation, not a prerequisite. The RRF parameters (constant, dedup key, tie-breaking) still
+have to be settled empirically.
+
+The harder constraint found at the same time: **a provider-backed vector index cannot coexist
+with any other index on its table**. Semantic search is free of client-side embedding only on
+such an index, so the configuration that makes semantic search cheap is exactly the one that
+forbids BM25 beside it. Hybrid is therefore available only over a *plain* vector index plus
+BM25, where the query vector has to be produced on this side. Both findings are recorded with
+their verification in [engine-contract.md](./engine-contract.md).
 
 ## Checklist
 
@@ -125,10 +135,16 @@ tie-breaking) are settled empirically.
 
 ### Tier 2 — needs scoped backend work, not exploratory
 
-- [ ] **Semantic search tool, then hybrid fusion.** Tracked as
-      [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39). Reciprocal-rank-fusion
+- [x] **Semantic search tool.** Shipped: a column carrying a vector index gets
+      `hotdata_search_semantic`, with the route read from the control plane at construction
+      rather than chosen by the caller. Both index kinds are supported — provider-backed, where
+      the engine embeds the query, and plain, where the caller supplies an `Embeddings`.
+- [ ] **Hybrid fusion.** The rest of
+      [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39): reciprocal-rank-fusion
       merge over BM25 and vector, exposed as one tool rather than two the model chooses between.
-      No intent classification needed — the first real, demoable slice of the "routing" vision.
+      Expressible as a single SQL query. Constrained to plain-vector-plus-BM25 corpora by the
+      coexistence restriction above, and needs the caller to say which vector column pairs with
+      which text column — the engine records no link between them for a plain index.
 - [ ] **Point-lookup generalization in `runtimedb`.** Tracked as
       [hotdata-langchain#34](https://github.com/hotdata-dev/hotdata-langchain/issues/34).
       Decouple the lookup-sidecar build from the vector-index pipeline, loosen the registry,
@@ -173,7 +189,8 @@ Grouped by code surface:
 - **id-first addressing in this repo** ([#38](https://github.com/hotdata-dev/hotdata-langchain/issues/38)) — breaking; mirrors the `hotdata-dlt-destination`
   change (its PR #59) that removed by-name resolution entirely. Worth landing before the next
   release rather than shipping two breaking versions.
-- **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — vector search tool, then client-side hybrid fusion over it and BM25.
+- **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — semantic search tool **shipped**; hybrid rank fusion over it and BM25 still open, as a single
+  SQL query rather than the client-side fan-out originally planned.
 - **Discovery surface** ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — report which columns are searchable in `hotdata_describe_tables`.
   Newly unblocked: indexes are invisible to SQL but `IndexesApi.list_indexes` returns them, so
   this needs no engine change. It is what would let the search corpus stop being pinned.

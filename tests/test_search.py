@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -14,9 +15,14 @@ from hotdata_langchain.search import (
     bm25_search_json,
     bm25_search_sql,
     default_search_description,
+    default_semantic_description,
     make_hotdata_search_tool,
+    semantic_search_json,
+    vector_distance_sql,
+    vector_search_sql,
 )
 from hotdata_langchain.tools import make_hotdata_tools
+from tests.conftest import bm25_index, vector_index
 
 TABLE = "default.public.listings"
 COLUMN = "description"
@@ -589,3 +595,435 @@ def test_a_caller_k_above_max_rows_still_warns_usefully(
     tool = make_hotdata_search_tool(mock_client, table=TABLE, column=COLUMN, k=50, max_rows=1)
     payload = json.loads(tool.invoke({"query": QUERY}))
     assert "LIMIT/OFFSET" not in payload["metadata"][CLIENT_WARNING_KEY]
+
+
+# --- semantic search --------------------------------------------------------------
+
+SEMANTIC_TABLE = "default.public.docs"
+
+
+def test_vector_search_sql_always_orders_because_the_engine_does_not() -> None:
+    """The sort is the whole correctness of this shape, not a nicety.
+
+    ``vector_search`` returns rows in rowid order with distances unsorted, so a query
+    without ``ORDER BY`` looks ranked and is not.
+    """
+    sql = vector_search_sql(table=SEMANTIC_TABLE, column="content", query=QUERY, k=3)
+    assert "ORDER BY _distance ASC" in sql
+    assert "_distance" in sql
+
+
+def test_vector_search_sql_bounds_with_the_argument_not_a_trailing_limit() -> None:
+    """A trailing LIMIT would take the first rows by rowid, not the nearest.
+
+    Measured: ``vector_search(..., 20) LIMIT 3`` returned the three lowest ids while the
+    three nearest were elsewhere in the result.
+    """
+    sql = vector_search_sql(table=SEMANTIC_TABLE, column="content", query=QUERY, k=3)
+    assert "'cozy apartment', 3)" in sql
+    assert not sql.rstrip().endswith("LIMIT 3")
+
+
+def test_vector_distance_sql_needs_the_limit_that_vector_search_must_not_have() -> None:
+    """The two semantic shapes bound themselves differently, and both ways are required.
+
+    Here the distance is computed per row, so the sort plus LIMIT is what selects top-k;
+    omitting the LIMIT also forfeits the index rewrite.
+    """
+    sql = vector_distance_sql(
+        table=SEMANTIC_TABLE, column="embedding", vector=[0.1, 0.2], k=4, columns=["id"]
+    )
+    assert sql.endswith("LIMIT 4")
+    assert "cosine_distance(embedding, ARRAY[0.1, 0.2]) AS _distance" in sql
+    assert "ORDER BY _distance ASC" in sql
+
+
+def test_vector_distance_sql_never_projects_the_vector_column() -> None:
+    """Projecting it floods the result and forfeits the index, so it is dropped."""
+    sql = vector_distance_sql(
+        table=SEMANTIC_TABLE,
+        column="embedding",
+        vector=[0.1],
+        k=2,
+        columns=["id", "embedding", "title"],
+    )
+    projection = sql.split(" FROM ")[0]
+    assert projection.startswith("SELECT id, title, cosine_distance(embedding,")
+    # The only mention of it is inside the distance call, never as a returned column.
+    assert projection.count("embedding") == 1
+
+
+def test_vector_distance_sql_rejects_a_metric_it_has_no_function_for() -> None:
+    with pytest.raises(ValueError, match="metric must be one of"):
+        vector_distance_sql(
+            table=SEMANTIC_TABLE, column="embedding", vector=[0.1], columns=["id"], metric="jaccard"
+        )
+
+
+def test_semantic_search_json_requires_exactly_one_of_query_or_vector() -> None:
+    client = MagicMock()
+    with pytest.raises(ValueError, match="exactly one of query"):
+        semantic_search_json(client, table=SEMANTIC_TABLE, column="content")
+    with pytest.raises(ValueError, match="exactly one of query"):
+        semantic_search_json(
+            client, table=SEMANTIC_TABLE, column="content", query=QUERY, vector=[0.1]
+        )
+
+
+# --- routing ----------------------------------------------------------------------
+
+
+def _hit() -> QueryResult:
+    """One row back, so a routing test asserts on the SQL rather than on the result."""
+    return QueryResult(
+        columns=["id"],
+        rows=[["a"]],
+        row_count=1,
+        result_id="res_hit",
+        query_run_id="run_hit",
+        execution_time_ms=1,
+        warning=None,
+        error_message=None,
+    )
+
+
+def _tool_for(
+    client: MagicMock,
+    search_indexes: MagicMock,
+    listed: list[Any],
+    **kwargs: Any,
+) -> Any:
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=listed)
+    return make_hotdata_search_tool(client, table=TABLE, column=COLUMN, **kwargs)
+
+
+def test_a_bm25_index_routes_to_text_search(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(client, search_indexes, [bm25_index()], database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+
+
+def test_a_provider_backed_index_routes_to_semantic_with_no_embedding_model(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The engine embeds both sides, so this route costs the caller no new dependency."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    sql = executed_sql(client)
+    assert "vector_search(" in sql
+    assert "cozy apartment" in sql
+
+
+def test_a_plain_index_without_an_embedding_model_fails_at_construction(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Raising here beats a query-time type error the model cannot act on."""
+    client = MagicMock()
+    with pytest.raises(ValueError, match="cannot embed a query"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN])],
+            database_id=managed_db.id,
+        )
+
+
+def test_a_plain_index_with_an_embedding_model_embeds_the_query(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5, 0.25]
+    tool = _tool_for(
+        client,
+        search_indexes,
+        [vector_index(columns=[COLUMN])],
+        database_id=managed_db.id,
+        embedding=embedding,
+        columns=["id"],
+    )
+    tool.invoke({"query": QUERY})
+    embedding.embed_query.assert_called_once_with(QUERY)
+    assert "cosine_distance(description, ARRAY[0.5, 0.25])" in executed_sql(client)
+
+
+def test_a_pending_index_is_not_offered(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """A search against a pending index fails, and it fails after the model committed."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN, status="pending")
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+
+
+def test_unreadable_indexes_fall_back_to_the_text_route(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Introspection failing must not stop a tool being built over the table."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    search_indexes.return_value.list_indexes.side_effect = RuntimeError("no permission")
+    tool = make_hotdata_search_tool(client, table=TABLE, column=COLUMN, database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+
+
+def test_forcing_semantic_without_a_vector_index_raises(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    with pytest.raises(ValueError, match="strategy='semantic' needs a vector index"):
+        _tool_for(
+            client,
+            search_indexes,
+            [bm25_index()],
+            database_id=managed_db.id,
+            strategy="semantic",
+        )
+
+
+def test_forcing_text_over_a_semantic_column_takes_the_text_route(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id, strategy="text")
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+
+
+def test_without_a_database_id_nothing_is_introspected(
+    search_indexes: MagicMock,
+) -> None:
+    """No scope to ask the control plane with, so the route stays what it always was."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = make_hotdata_search_tool(client, table=TABLE, column=COLUMN)
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+    search_indexes.return_value.list_indexes.assert_not_called()
+
+
+# --- semantic descriptions --------------------------------------------------------
+
+
+def test_semantic_description_says_which_way_the_ranking_runs() -> None:
+    """Distance is the reverse of score, and a model assuming otherwise reads it backwards."""
+    text = default_semantic_description(TABLE, COLUMN, columns=["id", COLUMN])
+    assert "smallest first" in text
+    assert "distance" in text
+
+
+def test_semantic_description_names_the_capability_not_the_index() -> None:
+    """The contract has to survive the retrieval strategy changing underneath it."""
+    text = default_semantic_description(TABLE, COLUMN).lower()
+    for leak in ("vector", "embedding", "hnsw", "bm25", "cosine"):
+        assert leak not in text
+
+
+def test_semantic_description_keeps_the_like_guard() -> None:
+    """Stating only that LIKE works was measured pulling models into ILIKE '%word%'."""
+    text = default_semantic_description(TABLE, COLUMN)
+    assert "LIKE and ILIKE" in text
+
+
+def test_semantic_clamp_points_at_vector_search_not_bm25(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Naming bm25_search here would send the model to a function with no index."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id, max_rows=10)
+    payload = json.loads(tool.invoke({"query": QUERY, "k": 50}))
+    warning = payload["metadata"][CLIENT_WARNING_KEY]
+    assert "vector_search" in warning
+    assert "bm25_search" not in warning
+
+
+def test_a_non_composable_route_does_not_send_the_model_to_sql() -> None:
+    """The two descriptions arrive in one prompt and must not contradict each other.
+
+    On a plain vector index the SQL tool says ranking by meaning is unavailable, so the
+    search tool telling the model to "rank inside SQL instead" is advice it cannot follow.
+    """
+    text = default_semantic_description(TABLE, COLUMN, composable=False)
+    assert "rank inside SQL instead" not in text
+    assert "not available in SQL here" in text
+    # The cap still has to be stated; only the way around it differs.
+    assert "row limit" in text
+
+
+def test_a_composable_route_still_prefers_the_composed_form() -> None:
+    text = default_semantic_description(TABLE, COLUMN, composable=True)
+    assert "rank inside SQL instead" in text
+
+
+def test_the_semantic_tool_and_the_sql_tool_agree_about_composing(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Pins the contradiction itself, across the two descriptions as actually built."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    plain = vector_index(columns=[COLUMN])
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=[plain])
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    tools = make_hotdata_tools(
+        client,
+        database_id=managed_db.id,
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_columns=["id"],
+        search_embedding=embedding,
+        management_tools=False,
+        describe_tables=False,
+    )
+    described = {tool.name: tool.description or "" for tool in tools}
+    sql = described["hotdata_execute_sql"]
+    search = described["hotdata_search_semantic"]
+    assert "not available in SQL" in sql
+    assert "rank inside SQL instead" not in search
+
+
+def test_results_carry_the_engines_own_distance_name(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """One value must not have two names: only `_distance` works in SQL the model writes."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    assert "_distance" in (tool.description or "")
+    assert "'distance' column" not in (tool.description or "")
+    tool.invoke({"query": QUERY})
+    assert " AS distance" not in executed_sql(client)
+
+
+def test_forcing_text_does_not_raise_when_no_index_is_visible(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Asymmetric with strategy='semantic', deliberately.
+
+    Introspection fails open, so raising here would turn a listing that failed — a
+    permissions gap, an unreachable control plane — into a build error for a column that
+    really does carry a BM25 index. The engine's own message is the error instead, at the
+    point it was raised before any of this existed.
+    """
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(client, search_indexes, [], database_id=managed_db.id, strategy="text")
+    tool.invoke({"query": QUERY})
+    assert "bm25_search(" in executed_sql(client)
+
+
+def test_an_index_reporting_no_metric_is_refused_rather_than_assumed(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Assuming cosine for an l2 index is a wrong answer that looks like a right one.
+
+    The engine does not report it: the query returns rows, by full scan, ranked by a
+    function the vectors were never indexed for.
+    """
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError, match="reports no metric"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric=None)],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+
+
+def test_an_unknown_metric_fails_at_construction_not_on_every_call(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError, match="has no distance function for"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric="jaccard")],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+
+
+def test_a_provider_backed_index_needs_no_metric_of_its_own(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The engine resolves the function from the index, so the metric is not ours to know."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN, metric=None)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "vector_search(" in executed_sql(client)
+
+
+def test_the_description_never_promises_a_column_the_hit_will_not_carry(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """A vector column named in `columns` is dropped from the SELECT, so drop it here too."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    tool = _tool_for(
+        client,
+        search_indexes,
+        [vector_index(columns=[COLUMN])],
+        database_id=managed_db.id,
+        embedding=embedding,
+        columns=["id", COLUMN, "name"],
+    )
+    described = tool.description or ""
+    assert "Each hit carries id and name" in described
+    assert f"{COLUMN} and name" not in described
+    tool.invoke({"query": QUERY})
+    assert executed_sql(client).startswith("SELECT id, name, cosine_distance(")
+
+
+def test_the_metric_error_offers_only_remedies_that_resolve(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """strategy='text' is not a way out of a vector column.
+
+    Reaching this error means a plain index, whose column holds vectors and therefore
+    carries no BM25 index — verified against the engine, which answers a text search there
+    with "No BM25 index found on column 'embedding'". Suggesting it would trade a
+    build-time error for a first-invocation one, which is what this check removes.
+    """
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError) as raised:
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric=None)],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+    assert "strategy='text'" not in str(raised.value)
+    assert "explicit metric" in str(raised.value)

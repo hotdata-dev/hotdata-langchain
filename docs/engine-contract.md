@@ -97,10 +97,12 @@ Returns the table's columns plus a trailing `score` (Float32). Four properties s
   "find the rows about X, then aggregate over all of them" a single query, and it is why
   `sql_tool_description` names the function rather than pointing only at the search tool.
 
-  The vector side does **not** compose this way: `vector_search` takes a *vector*, not text, so
-  a meaning-defined cohort cannot be expressed in SQL by an agent unaided. Something has to
-  embed the concept first. That asymmetry is tracked in
-  [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39).
+  The vector side composes the same way **when the index is provider-backed** (verified
+  2026-08-18). `vector_search('catalog.schema.table', 'column', 'query text', k)` takes text,
+  and `COUNT(id)` over it aggregated a meaning-defined cohort in one query. This corrects an
+  earlier claim here that `vector_search` takes only a vector: that is true of a *plain*
+  vector index, not of one built with an embedding provider. See "Two kinds of vector index"
+  below for which is which, and [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39).
 - **Results are not sorted.** Rows come back in rowid order, like SQLite FTS5. Verified: without
   `ORDER BY` the scores came back `8.788, 8.092, 8.034, 8.254, 8.496`. Ranking must be asked for.
 - **The fourth argument is the real bound.** BM25 is top-k, so tantivy needs the bound before
@@ -111,7 +113,9 @@ Returns the table's columns plus a trailing `score` (Float32). Four properties s
   scan-bound difference rather than an observed slowdown. Passing `k` explicitly is free, so we do.
 - **The index is a hard prerequisite.** No brute-force fallback: a column without a BM25 index
   gives `No BM25 index found on column 'name' for <conn>.public.listings`. This differs from
-  vector search, where scalar distance UDFs still work without an index.
+  vector search, where the *explicit-vector* scalar UDFs (`cosine_distance(col, ARRAY[...])`)
+  still work without an index. The text-taking vector forms have no such fallback either —
+  see "Two kinds of vector index" below.
 
 Scores are comparable within one result set, not across queries. Observed BM25 range on real
 data: roughly 8–11. Cosine distance is 0–2. **Never compare or average across the two** — this is
@@ -126,10 +130,97 @@ they are not three of the same kind of thing:
 |---|---|---|
 | Sorted | the planner substitutes the sorted parquet when a pushed-down filter matches the index's **leading** sort column | no — transparent |
 | BM25 | `bm25_search(...)` table function | yes |
-| Vector | `vector_search(...)` table function | yes |
+| Vector, provider-backed | `vector_search(...)` table function, or `vector_distance(col, 'text')` | yes |
+| Vector, plain | `cosine_distance(col, ARRAY[...])` in `ORDER BY ... LIMIT`, rewritten to an index lookup | no — transparent |
 
 So the sorted index needs no tool: it is already served through `hotdata_execute_sql`. There is
 no callable function for it.
+
+### Two kinds of vector index, queried differently (verified 2026-08-18)
+
+`create_index(index_type="vector", ...)` builds one of two things, and which one decides
+whether an agent can write a semantic search in SQL at all.
+
+| | Built over | `source_column` | A query passes | Needs an embedding model client-side |
+|---|---|---|---|---|
+| **Provider-backed** | a **text** column, with `embedding_provider_id=` | the text column | text | no — the engine embeds both sides |
+| **Plain** | a column that already holds vectors | `None` | a vector literal | yes, the same model the column was written with |
+
+The workspace carries a system provider, `sys_emb_openai` (`text-embedding-3-small`, cosine),
+so a provider-backed index needs nothing registered first. Building one **materialises a new
+column**: indexing `content` produced `content_embedding` (`List(Float32)`), which appears in
+`information_schema` like any other column and is reported by `hotdata_describe_tables`.
+
+Both text-taking forms work against a provider-backed index and **both hard-require one**:
+
+```sql
+SELECT id, content, _distance FROM vector_search('default.public.t', 'content', 'quiet garden', 5)
+SELECT id, vector_distance(content, 'quiet garden') AS d FROM public.t ORDER BY d ASC LIMIT 5
+```
+
+Without such an index either form fails with `no vector index with embedding configuration
+found for column 'x'`. The "vector search still works without an index, brute-force but
+correct" property belongs **only** to the explicit-vector UDFs (`cosine_distance(col,
+ARRAY[...])`), never to the text-taking forms.
+
+Of the two, `vector_search` is the one to compose: it is rewritten to an index lookup, while
+`vector_distance` planned as a `SortExec: TopK` full scan.
+
+**`vector_search` results are unsorted, and a trailing `LIMIT` takes the wrong rows.** Rows
+come back in rowid order with distances out of sequence, exactly like `bm25_search`. The
+difference is what happens next: `vector_search(..., 20) LIMIT 3` returned the three lowest
+ids, not the three nearest — the sort is what selects the top k, so `ORDER BY _distance ASC`
+is mandatory and the fourth argument is the only safe bound. The appended column is
+`_distance` (leading underscore), and **lower is nearer** — the reverse of `score`.
+
+**`EXPLAIN` cannot be used on a `vector_search` query.** It fails with "vector_search() is a
+RuntimeDB rewrite-only stub and must not execute directly. The SQL rewrite step did not
+replace it with vector_search_vector()" — the rewrite does not run under `EXPLAIN`, so the
+stub reaches execution. The query itself is fine; only the plan is unobtainable this way.
+
+### A provider-backed index excludes every other index on its table (verified 2026-08-18)
+
+Creating a BM25 index on a table that already has a provider-backed vector index is refused:
+
+> Embedding-backed vector indexes cannot coexist with other indexes on the same table. Drop
+> the existing indexes before creating an embedding-backed vector index, or drop the
+> embedding-backed vector index before creating other indexes.
+
+A **plain** vector index and a BM25 index *do* coexist — confirmed by adding
+`listing_corpus_content_bm25` to a table already carrying a cosine index on `embedding`.
+
+Two consequences follow, and both shape `hotdata_langchain/search.py`:
+
+- **Text and meaning are mutually exclusive per column** in every configuration the engine
+  permits. BM25 indexes a text column, a plain vector index a vector column, so the two land
+  on different columns; a provider-backed index rules out the other entirely. Routing a
+  column to a retrieval strategy therefore needs no preference rule.
+- **Hybrid retrieval costs the client-side embedding dependency.** The arrangement that makes
+  semantic search free (provider-backed, engine embeds) is exactly the one that forbids BM25,
+  so rank fusion is only available over plain vector + BM25, where the query vector has to
+  come from this side.
+
+### Rank fusion needs no engine primitive (verified 2026-08-18)
+
+CTEs, `ROW_NUMBER() OVER (ORDER BY ...)` and `FULL OUTER JOIN` all work, so reciprocal rank
+fusion is expressible as one query — one round trip, no client-side rank bookkeeping:
+
+```sql
+WITH v AS (SELECT id, ROW_NUMBER() OVER (ORDER BY cosine_distance(embedding, ARRAY[...]) ASC) AS rank
+           FROM public.listing_corpus),
+     vv AS (SELECT id, rank FROM v WHERE rank <= 20),
+     b AS (SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank
+           FROM bm25_search('default.public.listing_corpus', 'content', 'quiet garden plants', 20))
+SELECT COALESCE(vv.id, b.id) AS id,
+       COALESCE(1.0/(60 + vv.rank), 0) + COALESCE(1.0/(60 + b.rank), 0) AS rrf
+FROM vv FULL OUTER JOIN b ON vv.id = b.id
+ORDER BY rrf DESC LIMIT 8
+```
+
+Observed behaving correctly: a row ranked 1 by BM25 and 3 by vector won; a row ranked 2 by
+vector and absent from the BM25 list scored exactly `1/62`. This is why the engine-side
+fusion primitive requested in [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)
+is an optimisation rather than a prerequisite.
 
 ### The vector index is also reached without naming it (verified 2026-08-06)
 

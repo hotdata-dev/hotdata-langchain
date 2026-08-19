@@ -7,8 +7,37 @@ rather than being reimplemented per module where the two copies could drift apar
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
+from typing import Literal
 
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: Metrics a vector index can be built for.
+DistanceMetric = Literal["cosine", "l2", "dot"]
+
+#: Engine scalar UDF backing each metric. All three return lower-is-closer distances.
+#:
+#: Both the vector store and the semantic search tool emit these, and a query using a
+#: function the index was not built for is not an error — it silently reverts to a full
+#: scan — so the mapping lives here rather than in either module, where two copies could
+#: drift apart without anything failing.
+DISTANCE_FUNCTIONS: dict[str, str] = {
+    "cosine": "cosine_distance",
+    "l2": "l2_distance",
+    "dot": "negative_dot_product",
+}
+
+
+def vector_literal(values: Sequence[float]) -> str:
+    """Return ``values`` as a SQL ``ARRAY[...]`` literal of floats.
+
+    ``repr`` of a float round-trips exactly, which matters: a query vector shortened in
+    formatting is a different vector, and the rows it ranks would be quietly different
+    from the ones the caller's model asked for.
+    """
+    if len(values) == 0:
+        raise ValueError("a vector literal needs at least one value")
+    return "ARRAY[" + ", ".join(repr(float(value)) for value in values) + "]"
 
 
 def quote_identifier(value: str) -> str:
