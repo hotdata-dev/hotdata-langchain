@@ -7,66 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-19
+
 ### Added
 
-- Semantic search. A column carrying a vector index gets a `hotdata_search_semantic` tool that
-  ranks rows by closeness in meaning, alongside the existing text-relevance route
-  ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)).
-- The retrieval route is read from the column's indexes when the tools are built, rather than
-  chosen by the caller. Indexes are invisible to SQL, so `hotdata_langchain.indexes` asks the
-  control plane once and reports each column's capability. Text and meaning cannot collide on
-  one column in any configuration the engine permits, so the routing needs no preference rule.
-- `search_embedding=` on `make_hotdata_tools`, required only for a *plain* vector index — one
-  built over a column that already holds vectors, where the engine has no record of how they
-  were produced and cannot embed a query to match them. An index built with an embedding
-  provider needs nothing on this side: the engine embeds both the column and the query. Omitting
-  it where it is required fails when the tools are built, not on the agent's first query.
+- Search by meaning. A column carrying a vector index gets a `hotdata_search_semantic` tool
+  that ranks rows by how close they are in meaning to a query, alongside the existing
+  text-relevance search ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)).
+  Hits carry `_distance`, the engine's own column name, where **lower is nearer** — the
+  reverse of what `score` means on the text route, which both tool descriptions state.
+- Which of the two a column gets is read from its indexes when the tools are built, not
+  chosen by the caller. Indexes are invisible to SQL, so the new `hotdata_langchain.indexes`
+  asks the control plane once and reports each column's capability. Callers configure a
+  corpus and get whichever search the data supports, with one agent-facing contract either
+  way. Introspection fails open: a control plane that cannot be reached leaves the text
+  route, which is what this did before it could ask.
+- `search_embedding=` on `make_hotdata_tools`, required only for a *plain* vector index —
+  one built over a column that already holds vectors, where the engine has no record of how
+  they were produced and cannot embed a query to match them. An index built with an embedding
+  provider needs nothing on this side: the engine embeds both the column and the query.
+  Omitting it where it is required fails when the tools are built, not on the agent's first
+  query.
+- A vector index whose reported metric is absent, or is one this package has no distance
+  function for, is refused when the tools are built rather than assumed to be `cosine`.
+  Emitting `cosine_distance` against an `l2` index is not an error the engine reports: the
+  query returns rows, by full scan, ranked by a function the vectors were never indexed for.
+  A provider-backed index is exempt, since the engine resolves the function from the index.
 - `search_strategy=` to force a route. `"semantic"` raises if no vector index covers the
   column; `"text"` does not, because index introspection fails open and a failed listing
   should not stop a tool being built over a column that really is BM25-indexed.
 - `DEFAULT_SEMANTIC_TOOL_NAME`, `SearchRoute`, `SearchStrategy`, `resolve_search_route`,
-  `generated_vector_columns` and `indexes_for_column` are exported. The tool name matters most:
-  it now varies with the data, so a consumer filtering tools by name has to be able to ask for
-  it rather than hardcode a string that changes when a corpus gains an index.
+  `generated_vector_columns`, `indexes_for_column` and `DistanceMetric` are exported. The
+  tool name matters most: it now varies with the data, so a consumer filtering tools by name
+  has to be able to ask for it rather than hardcode a string that changes when a corpus gains
+  an index.
 
 ### Changed
 
 - A pinned corpus whose column carries a vector index now gets the semantic tool rather than
   the text one, and the tool is named `hotdata_search_semantic` rather than
-  `hotdata_search_text`. The name reaches the model, and calling a search that ranks by meaning
-  "search_text" states the one thing it does not do. Pass `search_tool_name=` to pin the name.
-  There is no route to keep: a column that now searches by meaning cannot also be BM25-indexed,
-  since a provider-backed index excludes every other index on its table and a plain one sits on
-  a vector column, so `search_strategy="text"` there builds a tool the engine rejects on its
-  first call.
+  `hotdata_search_text`. The name reaches the model, and calling a search that ranks by
+  meaning "search_text" states the one thing it does not do. Pass `search_tool_name=` to pin
+  the name. There is no route to keep: a column that searches by meaning cannot also be
+  BM25-indexed, since a provider-backed index excludes every other index on its table and a
+  plain one sits on a vector column.
 - The SQL tool's description follows the retrieval route, naming `vector_search` where the
-  pinned column is searchable by meaning and `bm25_search` where it is searchable by text. Both
-  descriptions reach the model in the same prompt, so the previous fixed wording would have told
-  it to compose a function that has no index on the column it was just given. Where the route
-  has no composed form at all — a plain vector index, which would need a query vector SQL cannot
-  express — the description says so instead of advertising it.
-- The semantic route's truncation and `k`-clamp warnings name `vector_search` rather than
-  `bm25_search`, for the same reason.
-- The semantic tool's closing advice follows the route too. It told the model to "rank inside
-  SQL instead" on every route, including the plain vector index where the SQL tool's own
-  description says ranking by meaning is unavailable — the two arriving in one prompt, telling
-  it to do a thing and that it cannot. Found by running the tools in front of a model; no test
-  would have caught it, because each description was correct in isolation.
-- A `search_columns` list naming the vector column no longer has the tool's description
-  promise a column the hit does not carry. The column is dropped from the SELECT — projecting
-  a vector both floods the result and forfeits the index — and the description is now built
-  from the same filtered list rather than the caller's.
-- Semantic results keep the engine's `_distance` column name rather than renaming it to
-  `distance`. The rename was cosmetic and left one value with two names: `distance` is what the
-  tool returned, `_distance` is the only name that resolves in SQL the agent writes itself.
+  pinned column is searchable by meaning and `bm25_search` where it is searchable by text,
+  and carrying the `ORDER BY _distance ASC` that `vector_search` needs — its rows come back
+  unsorted, so a trailing `LIMIT` without that sort returns arbitrary rows rather than the
+  nearest ones. Where the route has no composed form at all — a plain vector index, which
+  would need a query vector SQL cannot express — the description says so rather than
+  advertising a route the agent cannot take. The two descriptions reach the model in one
+  prompt, so both are resolved from a single route rather than written independently.
+- `DISTANCE_FUNCTIONS` and `DistanceMetric` are defined in `hotdata_langchain._sql` rather
+  than in `hotdata_langchain.vectorstore`, since the search tools emit the same engine
+  functions and two copies of that mapping could drift apart without anything failing. No
+  import breaks: `DISTANCE_FUNCTIONS` is exported from `hotdata_langchain` as before,
+  `DistanceMetric` now is too, and both remain bound in `hotdata_langchain.vectorstore`.
 
 ### Fixed
 
-- A plain vector index whose reported metric is absent or unrecognised is refused when the
-  tools are built, instead of being assumed to be `cosine`. Emitting `cosine_distance` against
-  an `l2` index is not an error the engine reports: the query returns rows, by full scan,
-  ranked by a function the vectors were never indexed for — a wrong answer that looks like a
-  right one. `HotdataVectorStore` already refused to guess here.
 - `docs/engine-contract.md` claimed `vector_search` takes only a vector, so a meaning-defined
   cohort could not be expressed in SQL by an agent unaided. That holds for a plain vector index
   and not for a provider-backed one, where `vector_search(table, column, 'query text', k)` takes
@@ -74,6 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restriction that makes this awkward: a provider-backed index cannot coexist with any other
   index on its table, so the arrangement that makes semantic search free is the one that forbids
   BM25 beside it.
+- `docs/ai-native-layer-roadmap.md` argued rank fusion should go client-side to avoid a second
+  round trip. The latency measurement it cites stands, but the conclusion does not: reciprocal
+  rank fusion is expressible as a single SQL query, since CTEs, `ROW_NUMBER() OVER` and
+  `FULL OUTER JOIN` all work, so no engine-side fusion primitive is a prerequisite.
 
 ## [0.9.0] - 2026-08-18
 
