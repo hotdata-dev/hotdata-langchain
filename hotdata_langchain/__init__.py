@@ -9,6 +9,7 @@ except PackageNotFoundError:
 
 from hotdata_framework import HotdataClient, ManagedDatabase, QueryResult, from_env
 
+from hotdata_langchain._sql import DISTANCE_FUNCTIONS, DistanceMetric
 from hotdata_langchain.databases import (
     create_managed_database,
     list_managed_databases_json,
@@ -69,10 +70,7 @@ from hotdata_langchain.tools import (
     make_hotdata_tools,
     result_rows_for_llm,
 )
-from hotdata_langchain.vectorstore import (
-    DISTANCE_FUNCTIONS,
-    HotdataVectorStore,
-)
+from hotdata_langchain.vectorstore import HotdataVectorStore
 
 __all__ = [
     "CAPABILITY_PHRASES",
@@ -91,6 +89,7 @@ __all__ = [
     "SCORE_COLUMN",
     "SEMANTIC",
     "TEXT",
+    "DistanceMetric",
     "HotdataClient",
     "HotdataToolError",
     "HotdataVectorStore",

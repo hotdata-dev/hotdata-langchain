@@ -49,12 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description says ranking by meaning is unavailable — the two arriving in one prompt, telling
   it to do a thing and that it cannot. Found by running the tools in front of a model; no test
   would have caught it, because each description was correct in isolation.
+- A `search_columns` list naming the vector column no longer has the tool's description
+  promise a column the hit does not carry. The column is dropped from the SELECT — projecting
+  a vector both floods the result and forfeits the index — and the description is now built
+  from the same filtered list rather than the caller's.
 - Semantic results keep the engine's `_distance` column name rather than renaming it to
   `distance`. The rename was cosmetic and left one value with two names: `distance` is what the
   tool returned, `_distance` is the only name that resolves in SQL the agent writes itself.
 
 ### Fixed
 
+- A plain vector index whose reported metric is absent or unrecognised is refused when the
+  tools are built, instead of being assumed to be `cosine`. Emitting `cosine_distance` against
+  an `l2` index is not an error the engine reports: the query returns rows, by full scan,
+  ranked by a function the vectors were never indexed for — a wrong answer that looks like a
+  right one. `HotdataVectorStore` already refused to guess here.
 - `docs/engine-contract.md` claimed `vector_search` takes only a vector, so a meaning-defined
   cohort could not be expressed in SQL by an agent unaided. That holds for a plain vector index
   and not for a provider-backed one, where `vector_search(table, column, 'query text', k)` takes

@@ -6,12 +6,19 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from hotdata_framework import HotdataClient, ManagedDatabase
+from langchain_core.embeddings import Embeddings
 from langchain_core.tools import StructuredTool
 
-from hotdata_langchain._sql import quote_literal, validate_identifier
+from hotdata_langchain._sql import (
+    DISTANCE_FUNCTIONS,
+    DistanceMetric,
+    quote_literal,
+    validate_identifier,
+    vector_literal,
+)
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
 from hotdata_langchain.indexes import (
     SEMANTIC,
@@ -34,15 +41,6 @@ SCORE_COLUMN = "score"
 #: as private, which left one value with two names across the two descriptions the model reads
 #: — and only the engine's name works in SQL the model writes itself.
 DISTANCE_COLUMN = "_distance"
-
-#: Distance function serving each vector index metric, for the case where the caller
-#: supplies the query vector. A function the index was not built for is not an error: the
-#: query silently reverts to a full scan.
-DISTANCE_FUNCTIONS_BY_METRIC: dict[str, str] = {
-    "cosine": "cosine_distance",
-    "l2": "l2_distance",
-    "dot": "negative_dot_product",
-}
 
 #: Which retrieval route a search tool takes. ``auto`` reads it off the column's indexes.
 SearchStrategy = Literal["auto", "text", "semantic"]
@@ -232,7 +230,7 @@ def vector_distance_sql(
     vector: Sequence[float],
     k: int = DEFAULT_SEARCH_LIMIT,
     columns: Sequence[str] | None = None,
-    metric: str = "cosine",
+    metric: DistanceMetric = "cosine",
 ) -> str:
     """Build the SQL for a ranked semantic top-k search from a caller-supplied vector.
 
@@ -256,13 +254,13 @@ def vector_distance_sql(
         raise ValueError(f"k must be >= 1, got {k}")
     if len(vector) == 0:
         raise ValueError("query vector must not be empty")
-    function = DISTANCE_FUNCTIONS_BY_METRIC.get(metric)
+    function = DISTANCE_FUNCTIONS.get(metric)
     if function is None:
-        known = ", ".join(sorted(DISTANCE_FUNCTIONS_BY_METRIC))
+        known = ", ".join(sorted(DISTANCE_FUNCTIONS))
         raise ValueError(f"metric must be one of {known}, got {metric!r}")
 
     projection = _semantic_projection(column, columns, include_column=False)
-    literal = "ARRAY[" + ", ".join(repr(float(value)) for value in vector) + "]"
+    literal = vector_literal(vector)
     selected = ", ".join(
         f"{function}({column}, {literal}) AS {DISTANCE_COLUMN}" if name == DISTANCE_COLUMN else name
         for name in projection
@@ -279,7 +277,7 @@ def semantic_search_json(
     vector: Sequence[float] | None = None,
     k: int = DEFAULT_SEARCH_LIMIT,
     columns: Sequence[str] | None = None,
-    metric: str = "cosine",
+    metric: DistanceMetric = "cosine",
     max_rows: int = 100,
     database: ManagedDatabase | None = None,
     warnings: Sequence[str] = (),
@@ -287,7 +285,7 @@ def semantic_search_json(
     """Run a semantic search and return ``{"metadata": ..., "rows": [...]}`` as JSON.
 
     Takes exactly one of ``query`` (the engine embeds it, for a provider-backed index) or
-    ``vector`` (already embedded, for a plain one). Rows arrive ranked by ``distance``
+    ``vector`` (already embedded, for a plain one). Rows arrive ranked by ``_distance``
     ascending — nearest first, which is the reverse of what ``score`` means in a
     :func:`bm25_search_json` result.
 
@@ -544,9 +542,11 @@ def resolve_search_route(
                 f"and none was found.{offer}"
             )
         _require_embedding(semantic, column=column, has_embedding=has_embedding)
+        _require_metric(semantic, column=column)
         return SearchRoute(SEMANTIC, semantic)
     if semantic is not None:
         _require_embedding(semantic, column=column, has_embedding=has_embedding)
+        _require_metric(semantic, column=column)
         return SearchRoute(SEMANTIC, semantic)
     if text is None and database is not None:
         logger.debug(
@@ -571,10 +571,48 @@ def _require_embedding(index: SearchIndex, *, column: str, has_embedding: bool) 
         return
     raise ValueError(
         f"the vector index on {column!r} was built over a column that already holds "
-        "vectors, so the engine cannot embed a query for it. Pass embedding= with the "
-        "same model the column was written with, or build a provider-backed index over "
-        "the source text column instead, which lets the engine embed both sides."
+        "vectors, so the engine cannot embed a query for it. Pass the model the column "
+        "was written with — search_embedding= on make_hotdata_tools, embedding= on "
+        "make_hotdata_search_tool — or build a provider-backed index over the source "
+        "text column instead, which lets the engine embed both sides."
     )
+
+
+def _require_metric(index: SearchIndex, *, column: str) -> DistanceMetric:
+    """Return the metric to emit a distance function for, or raise.
+
+    Only a plain vector index needs one. A provider-backed index resolves the function
+    from itself, so its metric is not this side's business and ``cosine`` is returned
+    unused.
+
+    Neither an absent nor an unrecognised metric is safe to guess past. Assuming
+    ``cosine`` for an index built on ``l2`` is not an error the engine reports — the query
+    returns rows, by full scan, ranked by a function the vectors were never indexed for,
+    which is a wrong answer that looks like a right one. An unrecognised string is
+    survivable but would raise from inside the tool on every invocation, which is the
+    failure shape :func:`_require_embedding` exists to avoid. ``HotdataVectorStore``
+    refuses to guess in the same situation, for the same reason.
+    """
+    if index.embeds_query:
+        return "cosine"
+    where = f"the vector index on {column!r}"
+    if index.index_name:
+        where = f"{index.index_name}, the vector index on {column!r},"
+    if index.metric is None:
+        raise ValueError(
+            f"{where} reports no metric, so which distance function serves it cannot be "
+            "determined. Guessing would rank by a function the vectors were not indexed "
+            "for, which returns rows in a confident order that means nothing. Pass "
+            "strategy='text' to search this column another way, or rebuild the index with "
+            "an explicit metric."
+        )
+    if index.metric not in DISTANCE_FUNCTIONS:
+        known = ", ".join(sorted(DISTANCE_FUNCTIONS))
+        raise ValueError(
+            f"{where} reports metric {index.metric!r}, which this package has no distance "
+            f"function for; it knows {known}. Searching it would fail on every call."
+        )
+    return cast("DistanceMetric", index.metric)
 
 
 def make_hotdata_search_tool(
@@ -590,7 +628,7 @@ def make_hotdata_search_tool(
     max_rows: int = 100,
     database_id: str | ManagedDatabase | None = None,
     strategy: SearchStrategy = "auto",
-    embedding: Any | None = None,
+    embedding: Embeddings | None = None,
     route: SearchRoute | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that searches one indexed column, by text or by meaning.
@@ -608,7 +646,7 @@ def make_hotdata_search_tool(
     build error. ``embedding`` is a LangChain
     ``Embeddings`` and is required only for a plain vector index, where the engine has no
     way to embed the query itself; it must be the same model the column was written with.
-    See :func:`_resolve_route` for why ``auto`` needs no preference rule.
+    See :func:`resolve_search_route` for why ``auto`` needs no preference rule.
 
     The corpus is pinned here rather than chosen by the model: nothing in the tool
     surface lets an agent discover which columns are searchable, and the engine errors
@@ -659,9 +697,13 @@ def make_hotdata_search_tool(
     if columns is not None:
         if not route.semantic:
             _projection(column, columns)
+            projection = list(columns)
         else:
-            _semantic_projection(column, columns, include_column=projects_column)
-        projection = list(columns)
+            # Take the filtered result, not the caller's list: a semantic search over a
+            # vector column drops that column from the SELECT, and passing the unfiltered
+            # list on would have the description promise a column no hit carries.
+            selected = _semantic_projection(column, columns, include_column=projects_column)
+            projection = [name for name in selected if name != DISTANCE_COLUMN]
     else:
         projection = _default_columns(
             client,
@@ -707,7 +749,7 @@ def make_hotdata_search_tool(
         )
 
     embeds_query = bool(index and index.embeds_query)
-    metric = index.metric if index and index.metric else "cosine"
+    metric: DistanceMetric = "cosine" if index is None else _require_metric(index, column=column)
     # Bound outside the closure and left untyped: _require_embedding has already made
     # this non-None on the branch that reaches it.
     embedder: Any = embedding

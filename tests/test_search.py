@@ -927,3 +927,77 @@ def test_forcing_text_does_not_raise_when_no_index_is_visible(
     tool = _tool_for(client, search_indexes, [], database_id=managed_db.id, strategy="text")
     tool.invoke({"query": QUERY})
     assert "bm25_search(" in executed_sql(client)
+
+
+def test_an_index_reporting_no_metric_is_refused_rather_than_assumed(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Assuming cosine for an l2 index is a wrong answer that looks like a right one.
+
+    The engine does not report it: the query returns rows, by full scan, ranked by a
+    function the vectors were never indexed for.
+    """
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError, match="reports no metric"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric=None)],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+
+
+def test_an_unknown_metric_fails_at_construction_not_on_every_call(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    with pytest.raises(ValueError, match="has no distance function for"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=[COLUMN], metric="jaccard")],
+            database_id=managed_db.id,
+            embedding=embedding,
+            columns=["id"],
+        )
+
+
+def test_a_provider_backed_index_needs_no_metric_of_its_own(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The engine resolves the function from the index, so the metric is not ours to know."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    index = vector_index(columns=["description_embedding"], source_column=COLUMN, metric=None)
+    tool = _tool_for(client, search_indexes, [index], database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "vector_search(" in executed_sql(client)
+
+
+def test_the_description_never_promises_a_column_the_hit_will_not_carry(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """A vector column named in `columns` is dropped from the SELECT, so drop it here too."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5]
+    tool = _tool_for(
+        client,
+        search_indexes,
+        [vector_index(columns=[COLUMN])],
+        database_id=managed_db.id,
+        embedding=embedding,
+        columns=["id", COLUMN, "name"],
+    )
+    described = tool.description or ""
+    assert "Each hit carries id and name" in described
+    assert f"{COLUMN} and name" not in described
+    tool.invoke({"query": QUERY})
+    assert executed_sql(client).startswith("SELECT id, name, cosine_distance(")

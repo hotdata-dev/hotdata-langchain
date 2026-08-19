@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from hotdata_framework import DEFAULT_SCHEMA, HotdataClient, ManagedDatabase, QueryResult
+from langchain_core.embeddings import Embeddings
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import format_pattern_warnings
@@ -286,7 +287,7 @@ def make_hotdata_tools(
     search_k: int = DEFAULT_SEARCH_LIMIT,
     search_tool_name: str | None = None,
     search_strategy: SearchStrategy = "auto",
-    search_embedding: Any | None = None,
+    search_embedding: Embeddings | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
     management_tools: bool = True,
