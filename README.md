@@ -48,7 +48,7 @@ id of each.
 | `hotdata_create_managed_database` | Create a new managed database and return its id |
 | `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
 | `hotdata_describe_tables` | List tables, or one table's columns, types and how many rows hold a value |
-| `hotdata_search_text` | Search an indexed column by text relevance (opt-in — see below) |
+| `hotdata_search_text` | Search an indexed column by text relevance, fused with meaning where the table supports it (opt-in — see below) |
 | `hotdata_search_semantic` | Search an indexed column by meaning; replaces the above when the column carries a vector index |
 
 The descriptions carry the engine's contract — dialect, what SQL can and cannot do, and where
@@ -229,6 +229,7 @@ implementation detail as a decision.
 | Index on the column | Tool | Ranking column | Needs an `Embeddings` |
 |---|---|---|---|
 | BM25 | `hotdata_search_text` | `score`, highest first | no |
+| BM25, with a plain vector index on the table | `hotdata_search_text`, fused | `score`, highest first | **yes**, pass `search_embedding=` |
 | vector, provider-backed | `hotdata_search_semantic` | `_distance`, lowest first | no — the engine embeds the query |
 | vector, plain | `hotdata_search_semantic` | `_distance`, lowest first | **yes**, pass `search_embedding=` |
 
@@ -258,7 +259,8 @@ that assumes higher-is-better reads the ranking backwards.
 Passing `search_embedding` for a plain index is not optional: without it the tools refuse to
 build, rather than failing on the agent's first query with a type error it cannot act on.
 `search_strategy="semantic"` forces that route and raises if no vector index covers the
-column. `search_strategy="text"` forces the text route but does *not* raise, because index
+column, and `search_strategy="hybrid"` does the same for a fused one. `search_strategy="text"`
+forces the text route but does *not* raise, because index
 introspection fails open — a workspace that cannot list indexes would otherwise stop being
 able to build a search tool over a column that really does carry a BM25 index. There the
 engine's own "No BM25 index found" is the error, at the same point it was before.
@@ -266,7 +268,9 @@ engine's own "No BM25 index found" is the error, at the same point it was before
 The two never collide on one column. BM25 indexes a text column and a plain vector index a
 vector column, so they land on different columns of a table; and a provider-backed vector
 index cannot share a table with any other index at all. See
-[docs/engine-contract.md](docs/engine-contract.md) for what that restriction costs.
+[docs/engine-contract.md](docs/engine-contract.md) for what that restriction costs. Landing on
+different columns of one table is also what lets both be used at once — see
+[Both at once, under one tool](#both-at-once-under-one-tool) below.
 
 The SQL tool's description follows the same route, so it names `vector_search` where the
 column is searchable by meaning and `bm25_search` where it is searchable by text. Both
@@ -285,7 +289,10 @@ and in its `k` argument, and a call that was cut says so in `metadata.client_war
 reason over a wider cohort, call `bm25_search` (or `vector_search`, on a semantic route)
 inside SQL and aggregate there. A plain vector index has no such composed form — writing it
 needs a query vector, which SQL cannot express — and the SQL tool's description says so
-rather than advertising a route the agent cannot take.
+rather than advertising a route the agent cannot take. On a fused route only the text half
+is expressible in SQL, so the composed form still holds a whole cohort in one query but
+ranks on wording alone; both descriptions say that too, rather than one of them claiming
+SQL does what the tool does.
 
 A managed database's tables read as `default.<schema>.<table>`. An **attached** source's do
 not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not
@@ -327,6 +334,45 @@ tools = [
 Provisioning the index itself is not yet part of this package; create it through the Hotdata
 API or CLI. `demo/` has a script that does the whole flow — managed database, data load, BM25
 index, then an agent that picks between search and SQL.
+
+### Both at once, under one tool
+
+Because BM25 and a plain vector index land on different columns of the same table, both can
+be used at once. Pass `search_embedding=` alongside a BM25 column and the text tool ranks by
+wording *and* by meaning, merging the two rankings with reciprocal rank fusion:
+
+```python
+tools = hl.make_hotdata_tools(
+    client,
+    database_id="dbid...",
+    search_table="default.public.listing_corpus",
+    search_column="content",            # the BM25 column, as before
+    search_embedding=OpenAIEmbeddings(model="text-embedding-3-small"),
+)
+```
+
+The tool keeps its name, its `score` column and its contract. There is no second tool and no
+flag for the model to set, because the two fail differently and cover each other: BM25 misses
+a paraphrase that shares no words with the query, while vector search misses rare exact tokens
+— ids, model numbers, proper nouns — that embeddings smear. Making the model pick between them
+is handing it an implementation detail as a decision, and picking wrong costs recall silently.
+
+Ranks are fused, never scores. BM25 scores are unbounded and run around 8 to 11; cosine
+distance runs 0 to 2 and points the other way. There is no scale on which those can be added,
+so only rank position crosses between them. A row scores `1 / (60 + rank)` in each pathway
+that returned it, and each pathway looks `max(4k, 20)` deep so the lists overlap enough to
+have something to agree about. It is one query, not two — [the SQL is in
+docs/engine-contract.md](docs/engine-contract.md) — so fusion costs one round trip rather than
+two, and `hybrid_search_sql` exposes the constant and the depth if you want to tune them.
+
+Fusion applies only where the engine allows both indexes on one table, which rules out a
+provider-backed vector index. It needs a key column to join the two rankings on: the table's
+`id`, or whatever `search_key_column=` names. Since the engine records no link between a
+vector column and the text it was derived from, a table carrying more than one plain vector
+index needs `search_semantic_column=` to say which pairs with the text column; with exactly
+one, it is inferred. `search_strategy="text"` opts back out to plain BM25, and
+`search_strategy="hybrid"` raises instead of quietly falling back when a fusion cannot be
+built.
 
 ## Vector store
 

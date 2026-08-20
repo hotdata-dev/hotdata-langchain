@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hybrid search. Where a table carries a BM25 index on the searched column *and* a plain
+  vector index beside it, `hotdata_search_text` now ranks by wording and by meaning at once,
+  merging the two with reciprocal rank fusion
+  ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)). It stays one tool with
+  one name and one `score` column: the two searches fail differently — BM25 misses a
+  paraphrase sharing no words with the query, vector search misses rare exact tokens like ids
+  and model numbers — so doing both beats making the model choose between them.
+- Fusion is one SQL query rather than two searches merged on this side, so it costs one round
+  trip. `hybrid_search_sql` and `hybrid_search_json` build and run it, and `RRF_K` (60) and
+  the per-pathway candidate depth (`max(4k, 20)`) are both overridable there. The vector half
+  is shaped so the query still resolves through the vector index rather than scanning the
+  table, which `EXPLAIN` confirms and nothing in the result would reveal.
+- `search_semantic_column=` on `make_hotdata_tools`, and `semantic_column=` on
+  `make_hotdata_search_tool`, name the vector column to pair with the text one. Needed only
+  when a table carries more than one plain vector index; with exactly one it is inferred. The
+  engine records no link between a vector column and the text it was derived from, so the
+  pairing is a statement the caller makes rather than something that can be read back.
+- `search_strategy="hybrid"` raises when a fusion cannot be built, rather than falling back
+  the way `"auto"` does. `search_strategy="text"` opts back out to plain BM25.
+- `Fusion`, `RRF_K`, `hybrid_search_sql`, `hybrid_search_json` and `fusable_vector_indexes`
+  are exported.
+
+### Changed
+
+- Passing `search_embedding=` alongside a BM25-indexed column now fuses the two searches
+  where the table supports it. Previously it was accepted and had no effect on a text route.
+  Callers wanting the old behaviour can pass `search_strategy="text"`. Fusion needs a key
+  column to join the two rankings on, so it does not engage on a table without one.
+- The text tool's description says it also matches meaning when the route is fused, and
+  qualifies its advice about aggregating in SQL: only the text half of a fusion is
+  expressible there, so the composed form is narrower than the tool. The SQL tool's
+  description no longer says the search tool "does the same ranking" on such a route. Both
+  descriptions reach the model in one prompt, and understating the tool costs exactly the
+  recall fusion was added to win back.
+
 ## [0.10.0] - 2026-08-19
 
 ### Added

@@ -62,8 +62,11 @@ conclusion drawn from it does not. RRF is expressible as **one SQL query** using
 `ROW_NUMBER() OVER` and `FULL OUTER JOIN`, all of which the engine supports, so the fused
 search costs one round trip rather than two and needs no engine primitive — the
 `hybrid_search()` in [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37) is an
-optimisation, not a prerequisite. The RRF parameters (constant, dedup key, tie-breaking) still
-have to be settled empirically.
+optimisation, not a prerequisite. The RRF parameters are now settled. The constant is 60, the
+standard value from the paper the method comes from, kept rather than tuned. The dedup key is
+the table's key column, and the sort is tie-broken on it — that one *was* settled by
+observation, since every row found by a single pathway scores exactly `1 / (60 + rank)` and so
+ties in pairs.
 
 The harder constraint found at the same time: **a provider-backed vector index cannot coexist
 with any other index on its table**. Semantic search is free of client-side embedding only on
@@ -139,12 +142,15 @@ their verification in [engine-contract.md](./engine-contract.md).
       `hotdata_search_semantic`, with the route read from the control plane at construction
       rather than chosen by the caller. Both index kinds are supported — provider-backed, where
       the engine embeds the query, and plain, where the caller supplies an `Embeddings`.
-- [ ] **Hybrid fusion.** The rest of
-      [#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39): reciprocal-rank-fusion
-      merge over BM25 and vector, exposed as one tool rather than two the model chooses between.
-      Expressible as a single SQL query. Constrained to plain-vector-plus-BM25 corpora by the
-      coexistence restriction above, and needs the caller to say which vector column pairs with
-      which text column — the engine records no link between them for a plain index.
+- [x] **Hybrid fusion.** Shipped: a BM25 column on a table that also carries a plain vector
+      index is fused with it by reciprocal rank fusion, as a single SQL query, under the text
+      tool's existing name and contract rather than as a second tool the model chooses between.
+      Applying it needs an `Embeddings` on this side, since the coexistence restriction above
+      rules out the provider-backed index that would let the engine embed the query. The
+      pairing is inferred when the table carries exactly one plain vector index and named with
+      `search_semantic_column=` when it carries more — the engine records no link between a
+      vector column and the text it came from. The RRF constant is 60 and each pathway searches
+      `max(4k, 20)` candidates, both overridable on `hybrid_search_sql`.
 - [ ] **Point-lookup generalization in `runtimedb`.** Tracked as
       [hotdata-langchain#34](https://github.com/hotdata-dev/hotdata-langchain/issues/34).
       Decouple the lookup-sidecar build from the vector-index pipeline, loosen the registry,
@@ -189,8 +195,8 @@ Grouped by code surface:
 - **id-first addressing in this repo** ([#38](https://github.com/hotdata-dev/hotdata-langchain/issues/38)) — breaking; mirrors the `hotdata-dlt-destination`
   change (its PR #59) that removed by-name resolution entirely. Worth landing before the next
   release rather than shipping two breaking versions.
-- **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — semantic search tool **shipped**; hybrid rank fusion over it and BM25 still open, as a single
-  SQL query rather than the client-side fan-out originally planned.
+- **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — **shipped**, both halves: the semantic search tool, and hybrid rank fusion over it and
+  BM25 as a single SQL query rather than the client-side fan-out originally planned.
 - **Discovery surface** ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — report which columns are searchable in `hotdata_describe_tables`.
   Newly unblocked: indexes are invisible to SQL but `IndexesApi.list_indexes` returns them, so
   this needs no engine change. It is what would let the search corpus stop being pinned.
