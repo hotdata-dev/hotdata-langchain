@@ -408,7 +408,12 @@ def hybrid_search_sql(
 
     Rows come back ordered by the fused ``score``, highest first, tie-broken on
     ``key_column`` so that equal scores — common, since every row found by one pathway
-    alone scores exactly ``1 / (rrf_k + rank)`` — come back in a stable order.
+    alone scores exactly ``1 / (rrf_k + rank)`` — come back in a stable order. The sort
+    repeats the fused expression rather than naming the ``score`` alias, because the base
+    table is in scope and a table with its own ``score`` column would put two candidates
+    under that name. DataFusion was observed preferring the select-list alias, so this is
+    defence against a resolution rule rather than a fix for current behaviour; the
+    projection drops a table's own ``score`` for the same collision.
     """
     _validate_table_ref(table)
     validate_identifier(column, label="column")
@@ -449,7 +454,7 @@ def hybrid_search_sql(
         f"ON near_ranked.{key_column} = text_ranked.{key_column} "
         f"JOIN {table} base ON base.{key_column} = "
         f"COALESCE(near_ranked.{key_column}, text_ranked.{key_column}) "
-        f"ORDER BY {SCORE_COLUMN} DESC, base.{key_column} ASC "
+        f"ORDER BY {fused} DESC, base.{key_column} ASC "
         f"LIMIT {k}"
     )
 
@@ -513,6 +518,7 @@ def clamp_warning(
     requested: int,
     ceiling: int,
     function: str = "bm25_search",
+    hybrid: bool = False,
 ) -> str | None:
     """Return the warning for a model-supplied ``k`` cut to ``ceiling``, or ``None``.
 
@@ -525,15 +531,21 @@ def clamp_warning(
     ``function`` names the table function to compose with instead, and differs per
     retrieval route — a semantic tool pointing at ``bm25_search`` would send the model to
     a function with no index on the column it was searching.
+
+    ``hybrid`` adds the qualifier the fused route's other two strings carry. Only the text
+    half of a fusion is expressible in SQL, and a clamped fused call can put this warning
+    and :data:`HYBRID_REMEDY` into one ``client_warning`` — two accounts of the same
+    fallback, one of them overstating it.
     """
     if requested <= ceiling:
         return None
+    narrower = ", which ranks on wording alone" if hybrid else ""
     return (
         f"Asked for k={requested}, but this tool ranks at most {ceiling} rows, so k was "
         f"reduced to {ceiling} before searching. These are the top {ceiling} matches, "
         f"not a sample of {requested}, and rows beyond {ceiling} were never ranked. To "
         f"reason over a wider cohort, call {function} inside SQL and aggregate there "
-        f"rather than raising k here."
+        f"rather than raising k here{narrower}."
     )
 
 
@@ -813,6 +825,7 @@ def resolve_search_route(
             table=table,
             column=column,
             database=database,
+            text=text,
             semantic_column=semantic_column,
             has_embedding=has_embedding,
             key_column=key_column,
@@ -849,6 +862,7 @@ def resolve_search_route(
             table=table,
             column=column,
             database=database,
+            text=text,
             semantic_column=semantic_column,
             has_embedding=has_embedding,
             key_column=key_column,
@@ -867,6 +881,7 @@ def _resolve_fusion(
     table: str,
     column: str,
     database: ManagedDatabase | None,
+    text: SearchIndex | None,
     semantic_column: str | None,
     has_embedding: bool,
     key_column: str | None,
@@ -885,6 +900,19 @@ def _resolve_fusion(
         if required:
             raise ValueError(message)
         logger.info("not fusing the search on %s.%s: %s", table, column, message)
+
+    if text is None and indexes:
+        # Guarded on `indexes` so the fail-open path keeps failing open: an introspection
+        # that failed, or no database to introspect with, leaves `indexes` empty and says
+        # nothing about what the table carries. A listing that came back and did not
+        # include a ready BM25 index on this column is a fact, and fusing on it would
+        # build a tool whose every call the engine rejects — the deferred failure
+        # _require_embedding exists to prevent.
+        unmet(
+            f"{column!r} on {table} carries no BM25 index that is ready, so there is no "
+            "text ranking to fuse with. Fusion needs both halves."
+        )
+        return None
 
     candidates = fusable_vector_indexes(indexes)
     if semantic_column is not None:
@@ -1130,6 +1158,8 @@ def make_hotdata_search_tool(
             key_column=key_column,
             database=database,
             include_column=projects_column,
+            # Resolving the fusion already asked, and only builds one when the answer is yes.
+            key_column_present=True if route.fused is not None else None,
         )
 
     if not route.semantic:
@@ -1157,7 +1187,11 @@ def make_hotdata_search_tool(
                     cohort.
             """
             requested = None if k is None else max(1, k)
-            clamped = clamp_warning(requested=requested, ceiling=max_rows) if requested else None
+            clamped = (
+                clamp_warning(requested=requested, ceiling=max_rows, hybrid=fusion is not None)
+                if requested
+                else None
+            )
             wanted = default_k if requested is None else min(requested, max_rows)
             if fusion is None:
                 return bm25_search_json(
@@ -1254,6 +1288,7 @@ def _default_columns(
     key_column: str | None,
     database: ManagedDatabase | None,
     include_column: bool = True,
+    key_column_present: bool | None = None,
 ) -> list[str]:
     """Return the projection to use when the caller named none.
 
@@ -1265,6 +1300,11 @@ def _default_columns(
     key column carrying the result on its own. That is a thin hit, and deliberately so:
     the alternative is shipping a 1536-wide float list per row. A caller searching a
     vector column should name ``columns`` to say which text belongs beside the key.
+
+    ``key_column_present`` is the answer when the caller already has it, which saves a
+    round trip rather than changing any outcome. Resolving a fused route asks the same
+    question of the same table, so without this every fused tool construction runs the
+    identical ``information_schema`` query twice.
     """
     if not include_column:
         if key_column is None:
@@ -1273,7 +1313,14 @@ def _default_columns(
                 "its own; pass columns=[...] naming what a hit should carry, or "
                 "key_column= for the column that joins it back to the table"
             )
-        if not _has_column(client, table=table, column=key_column, database=database, default=True):
+        found = (
+            key_column_present
+            if key_column_present is not None
+            else _has_column(
+                client, table=table, column=key_column, database=database, default=True
+            )
+        )
+        if not found:
             raise ValueError(
                 f"{table} has no {key_column!r} column, so searching the vector column "
                 f"{column!r} would return nothing readable; pass columns=[...] naming "
@@ -1282,7 +1329,12 @@ def _default_columns(
         return [key_column]
     if key_column is None or key_column == column:
         return [column]
-    if not _has_column(client, table=table, column=key_column, database=database, default=False):
+    present = (
+        key_column_present
+        if key_column_present is not None
+        else _has_column(client, table=table, column=key_column, database=database, default=False)
+    )
+    if not present:
         return [column]
     return [key_column, column]
 

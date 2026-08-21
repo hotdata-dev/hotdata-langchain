@@ -220,7 +220,9 @@ SELECT base.id, base.content,
 FROM near_ranked FULL OUTER JOIN text_ranked ON near_ranked.id = text_ranked.id
 JOIN default.public.listing_corpus base
   ON base.id = COALESCE(near_ranked.id, text_ranked.id)
-ORDER BY score DESC, base.id ASC LIMIT 8
+ORDER BY COALESCE(1.0 / (60 + near_ranked.rrf_rank), 0) +
+         COALESCE(1.0 / (60 + text_ranked.rrf_rank), 0) DESC, base.id ASC
+LIMIT 8
 ```
 
 **The vector half has to be shaped as `ORDER BY <distance> LIMIT` inside its own CTE, with the
@@ -237,6 +239,13 @@ Two further properties, both observed rather than assumed:
   force the join key into the returned columns.
 - The join back to the base table is what lets a fused hit carry ordinary columns; the
   pathways themselves only carry the key and a rank.
+- **`ORDER BY <name>` prefers a select-list alias over a same-named base-table column.**
+  Tested by aliasing `-base.rating AS rating` on a table that has its own `rating`, and
+  sorting by the bare name: the rows came back ordered by the negated expression, matching
+  `ORDER BY -base.rating` exactly. So naming the `score` alias would work today. The query
+  above still repeats the fused expression, because the ordering would otherwise rest on that
+  resolution rule for any table carrying its own `score` column, and a wrong choice there
+  mis-ranks the result with nothing in the output to show it.
 
 Fusing on `listing_corpus` for `quiet garden plants` at depth 20, six rows appeared in both
 pathways and all six outranked every row found by only one — the top hit was BM25 rank 1 and

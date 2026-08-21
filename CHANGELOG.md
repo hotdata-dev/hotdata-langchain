@@ -35,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Passing `search_embedding=` alongside a BM25-indexed column now fuses the two searches
   where the table supports it. Previously it was accepted and had no effect on a text route.
-  Callers wanting the old behaviour can pass `search_strategy="text"`. Fusion needs a key
-  column to join the two rankings on, so it does not engage on a table without one.
+  Callers wanting the old behaviour can pass `search_strategy="text"`. Fusion needs both
+  halves and a key column to join the two rankings on, so a table missing a ready BM25 index
+  on the searched column, or missing the key, keeps the search it had.
 - The text tool's description says it also matches meaning when the route is fused, and
   qualifies its advice about aggregating in SQL: only the text half of a fusion is
   expressible there, so the composed form is narrower than the tool. The SQL tool's
