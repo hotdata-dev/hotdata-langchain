@@ -366,13 +366,18 @@ docs/engine-contract.md](docs/engine-contract.md) — so fusion costs one round 
 two, and `hybrid_search_sql` exposes the constant and the depth if you want to tune them.
 
 Fusion applies only where the engine allows both indexes on one table, which rules out a
-provider-backed vector index. It needs a key column to join the two rankings on: the table's
-`id`, or whatever `search_key_column=` names. Since the engine records no link between a
-vector column and the text it was derived from, a table carrying more than one plain vector
-index needs `search_semantic_column=` to say which pairs with the text column; with exactly
-one, it is inferred. `search_strategy="text"` opts back out to plain BM25, and
-`search_strategy="hybrid"` raises instead of quietly falling back when a fusion cannot be
-built.
+provider-backed vector index. It needs both halves actually present — a BM25 index on the
+searched column that has finished building, and a plain vector index to pair with it — plus a
+key column to join the two rankings on: the table's `id`, or whatever `search_key_column=`
+names. Since the engine records no link between a vector column and the text it was derived
+from, a table carrying more than one plain vector index needs `search_semantic_column=` to say
+which pairs with the text column; with exactly one, it is inferred.
+
+When any of that is missing, `search_strategy="auto"` keeps the search the table can support
+and logs why it did not fuse, at `INFO` on the `hotdata_langchain.search` logger — so a search
+that is quietly not fused has somewhere to say so. `search_strategy="hybrid"` raises there
+instead, which is the reason to ask for it by name. `search_strategy="text"` opts back out to
+plain BM25 on a table that could be fused.
 
 ## Vector store
 
