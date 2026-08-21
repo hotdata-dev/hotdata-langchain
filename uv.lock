@@ -226,7 +226,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -259,7 +259,7 @@ wheels = [
 
 [[package]]
 name = "hotdata-framework"
-version = "0.12.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
@@ -267,9 +267,9 @@ dependencies = [
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5a/94/12eadbb2a9b946aad21896cc0c1cebd1185c046b58b7e528575853fbef4d/hotdata_framework-0.12.0.tar.gz", hash = "sha256:c6a099b6b897434423fc2eef5f8f26f428c17b67243083c71c57045e554445a7", size = 121018, upload-time = "2026-08-11T16:24:33.72Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/b1/c44c520b861696cd138a5686e54fa3f0213ab35aede16a4fe0c4f5260915/hotdata_framework-0.12.1.tar.gz", hash = "sha256:86dd453f14ed3793cd2526b48cbb823b0d20d610fe784075debc74a544b99a5e", size = 126907, upload-time = "2026-08-18T13:11:54.76Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/81/ee5fe860a9fbac322a7d57867b386ab8afc15e66c3675127ebcd02589e6f/hotdata_framework-0.12.0-py3-none-any.whl", hash = "sha256:d7ffaf68dc58a3843068c5e2901415b1b18eeb1ed4662de6b8bc5fe373a93226", size = 22181, upload-time = "2026-08-11T16:24:32.358Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/0e/2ab773f9b351b9bfc7753f723d6581e25cb498629d01be98d80acdf2bc7c/hotdata_framework-0.12.1-py3-none-any.whl", hash = "sha256:7fd12ff359570d1e0a23d5334de32f0765d3670c9ce65bb23a5b82cbd4e8895d", size = 24836, upload-time = "2026-08-18T13:11:53.31Z" },
 ]
 
 [[package]]
@@ -1153,10 +1153,10 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "python-dateutil", marker = "python_full_version < '3.11'" },
-    { name = "pytz", marker = "python_full_version < '3.11'" },
-    { name = "tzdata", marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "tzdata" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/01/d40b85317f86cf08d853a4f495195c73815fdf205eef3993821720274518/pandas-2.3.3.tar.gz", hash = "sha256:e05e1af93b977f7eafa636d043f9f94c7ee3ac81af99c13508215942e64c993b", size = 4495223, upload-time = "2025-09-29T23:34:51.853Z" }
 wheels = [
@@ -1228,9 +1228,9 @@ resolution-markers = [
     "python_full_version >= '3.11' and python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "python-dateutil", marker = "python_full_version >= '3.11'" },
-    { name = "tzdata", marker = "(python_full_version >= '3.11' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "python-dateutil" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f8/87/4341c6252d1c47b08768c3d25ac487362bf403f0313ddae4a2a26c9b1b4c/pandas-3.0.3.tar.gz", hash = "sha256:696a4a00a2a2a35d4e5deb3fc946641b96c944f02230e4f76137fe35d806c4fc", size = 4651414, upload-time = "2026-05-11T18:54:29.21Z" }
 wheels = [
