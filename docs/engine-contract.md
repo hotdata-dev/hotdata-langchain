@@ -200,27 +200,62 @@ Two consequences follow, and both shape `hotdata_langchain/search.py`:
   so rank fusion is only available over plain vector + BM25, where the query vector has to
   come from this side.
 
-### Rank fusion needs no engine primitive (verified 2026-08-18)
+### Rank fusion needs no engine primitive (verified 2026-08-20)
 
-CTEs, `ROW_NUMBER() OVER (ORDER BY ...)` and `FULL OUTER JOIN` all work, so reciprocal rank
-fusion is expressible as one query — one round trip, no client-side rank bookkeeping:
+CTEs, `ROW_NUMBER() OVER (ORDER BY ...)`, `FULL OUTER JOIN` and a join back to the base table
+all work, so reciprocal rank fusion is expressible as one query — one round trip, no
+client-side rank bookkeeping. This is what `hybrid_search_sql` emits:
 
 ```sql
-WITH v AS (SELECT id, ROW_NUMBER() OVER (ORDER BY cosine_distance(embedding, ARRAY[...]) ASC) AS rank
-           FROM public.listing_corpus),
-     vv AS (SELECT id, rank FROM v WHERE rank <= 20),
-     b AS (SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank
-           FROM bm25_search('default.public.listing_corpus', 'content', 'quiet garden plants', 20))
-SELECT COALESCE(vv.id, b.id) AS id,
-       COALESCE(1.0/(60 + vv.rank), 0) + COALESCE(1.0/(60 + b.rank), 0) AS rrf
-FROM vv FULL OUTER JOIN b ON vv.id = b.id
-ORDER BY rrf DESC LIMIT 8
+WITH near AS (SELECT id, cosine_distance(embedding, ARRAY[...]) AS _distance
+              FROM default.public.listing_corpus ORDER BY _distance ASC LIMIT 20),
+     near_ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY _distance ASC) AS rrf_rank
+                     FROM near),
+     text_ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rrf_rank
+                     FROM bm25_search('default.public.listing_corpus', 'content',
+                                      'quiet garden plants', 20))
+SELECT base.id, base.content,
+       COALESCE(1.0 / (60 + near_ranked.rrf_rank), 0) +
+       COALESCE(1.0 / (60 + text_ranked.rrf_rank), 0) AS score
+FROM near_ranked FULL OUTER JOIN text_ranked ON near_ranked.id = text_ranked.id
+JOIN default.public.listing_corpus base
+  ON base.id = COALESCE(near_ranked.id, text_ranked.id)
+ORDER BY COALESCE(1.0 / (60 + near_ranked.rrf_rank), 0) +
+         COALESCE(1.0 / (60 + text_ranked.rrf_rank), 0) DESC, base.id ASC
+LIMIT 8
 ```
 
-Observed behaving correctly: a row ranked 1 by BM25 and 3 by vector won; a row ranked 2 by
-vector and absent from the BM25 list scored exactly `1/62`. This is why the engine-side
-fusion primitive requested in [#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37)
-is an optimisation rather than a prerequisite.
+**The vector half has to be shaped as `ORDER BY <distance> LIMIT` inside its own CTE, with the
+ranking applied outside it.** `EXPLAIN` shows `USearchExec` for that form and a full
+`DataSourceExec` scan over `[id, embedding]` for the equivalent that ranks every row with
+`ROW_NUMBER()` first and filters on the rank afterwards. Both return the same rows in the same
+order, so the difference is invisible except in the plan. An earlier revision of this document
+recorded the scanning form as the verified query; it was correct about the result and wrong
+about the cost.
+
+Two further properties, both observed rather than assumed:
+
+- `ORDER BY base.id` resolves when `id` is not in the projection, so the tie-break does not
+  force the join key into the returned columns.
+- The join back to the base table is what lets a fused hit carry ordinary columns; the
+  pathways themselves only carry the key and a rank.
+- **`ORDER BY <name>` prefers a select-list alias over a same-named base-table column.**
+  Tested by aliasing `-base.rating AS rating` on a table that has its own `rating`, and
+  sorting by the bare name: the rows came back ordered by the negated expression, matching
+  `ORDER BY -base.rating` exactly. So naming the `score` alias would work today. The query
+  above still repeats the fused expression, because the ordering would otherwise rest on that
+  resolution rule for any table carrying its own `score` column, and a wrong choice there
+  mis-ranks the result with nothing in the output to show it.
+
+Fusing on `listing_corpus` for `quiet garden plants` at depth 20, six rows appeared in both
+pathways and all six outranked every row found by only one — the top hit was BM25 rank 1 and
+vector rank 4, the runner-up vector rank 1 and BM25 rank 9. A row found by one pathway alone
+scores exactly `1 / (60 + rank)`, so single-pathway rows tie in pairs, which is why the sort
+carries a tie-break.
+
+This is why the engine-side fusion primitive requested in
+[#37](https://github.com/hotdata-dev/hotdata-langchain/issues/37) is an optimisation rather
+than a prerequisite.
 
 ### The vector index is also reached without naming it (verified 2026-08-06)
 

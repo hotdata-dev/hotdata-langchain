@@ -169,9 +169,18 @@ def sql_tool_description(
             f"columns plus a `score`, so it joins, groups and nests in subqueries like "
             f"any other table. {example} {prefer}"
         )
+    # On a fused route the search tool does *not* do the same ranking: it also ranks by
+    # meaning, and only the text half of that is expressible in SQL. Saying "the same
+    # ranking" there would understate the tool in the one prompt that also carries the
+    # tool's own description, leaving the model with two accounts that disagree.
+    same_ranking = (
+        "combines this ranking with one by meaning and returns the rows directly"
+        if search_route is not None and search_route.hybrid
+        else "does the same ranking and returns them directly"
+    )
     text_guidance = (
         f"{composable} To simply list the most relevant rows, the "
-        f"{search_tool_name} tool does the same ranking and returns them directly. "
+        f"{search_tool_name} tool {same_ranking}. "
         f"LIKE and ILIKE only test for a literal substring you already know, so they "
         f"are a filter, not a substitute for searching: ILIKE '%word%' returns "
         f"unranked rows and misses the related wording a search would find."
@@ -288,6 +297,7 @@ def make_hotdata_tools(
     search_tool_name: str | None = None,
     search_strategy: SearchStrategy = "auto",
     search_embedding: Embeddings | None = None,
+    search_semantic_column: str | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
     management_tools: bool = True,
@@ -335,11 +345,22 @@ def make_hotdata_tools(
     that column, which requires a search index on it. Which kind of search it does is read
     off that column's indexes here rather than chosen: a BM25 index gives
     ``hotdata_search_text``, a vector index ``hotdata_search_semantic``. ``search_strategy``
-    forces one; ``"semantic"`` raises if no vector index covers the column, while ``"text"``
+    forces one; ``"semantic"`` raises if no vector index covers the column, ``"hybrid"``
+    raises if the two cannot be fused, while ``"text"``
     falls through to the engine's own error, because index introspection fails open.
     ``search_embedding`` is a LangChain
-    ``Embeddings`` and is required only for a *plain* vector index, where the engine cannot
+    ``Embeddings`` and is required for a *plain* vector index, where the engine cannot
     embed the query itself; it must be the same model the column was written with.
+
+    Supplying ``search_embedding`` beside a BM25 column *fuses* the two: the text tool
+    keeps its name and its contract and ranks by both wording and meaning, combining them
+    with reciprocal rank fusion in a single query. The two miss different things — BM25
+    misses paraphrase, vector search misses rare exact tokens — so doing both beats making
+    the model choose, which is why this is not offered as a second tool. It applies only
+    where the engine allows both indexes on one table, which rules out a provider-backed
+    vector index. ``search_semantic_column`` names the vector column to pair with, and is
+    needed only when the table carries more than one; ``search_strategy="text"`` opts back
+    out.
 
     ``search_columns`` selects the columns each hit returns; left unset, a hit carries the
     searched column plus ``search_key_column`` when the table has one, so the hit can be
@@ -451,6 +472,8 @@ def make_hotdata_tools(
             database=database,
             strategy=search_strategy,
             has_embedding=search_embedding is not None,
+            semantic_column=search_semantic_column,
+            key_column=search_key_column,
         )
         if has_search and search_table is not None and search_column is not None
         else None

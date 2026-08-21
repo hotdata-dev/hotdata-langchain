@@ -215,3 +215,18 @@ def generated_vector_columns(indexes: Sequence[SearchIndex]) -> Iterator[str]:
     for index in indexes:
         if index.embeds_query and index.vector_column:
             yield index.vector_column
+
+
+def fusable_vector_indexes(indexes: Sequence[SearchIndex]) -> list[SearchIndex]:
+    """Return the plain vector indexes among ``indexes``, in listing order.
+
+    Plain because those are the only ones a text search can be fused with. A
+    provider-backed index cannot coexist with the BM25 index the other half of a fusion
+    needs, so a table carrying one has nothing to fuse.
+
+    The engine records no link between a plain index's vector column and the text it was
+    derived from — ``source_column`` is ``None`` — so pairing one with a text column is
+    the caller's statement, not something that can be read back. This returns the
+    candidates so a caller can pair when there is exactly one and ask when there are more.
+    """
+    return [index for index in indexes if index.kind == SEMANTIC and not index.embeds_query]

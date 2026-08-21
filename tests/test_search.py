@@ -11,11 +11,16 @@ from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.results import CLIENT_WARNING_KEY
 from hotdata_langchain.search import (
+    DEFAULT_FETCH_K,
     DEFAULT_SEARCH_LIMIT,
+    DEFAULT_SEARCH_TOOL_NAME,
+    SCORE_COLUMN,
     bm25_search_json,
     bm25_search_sql,
     default_search_description,
     default_semantic_description,
+    fetch_depth,
+    hybrid_search_sql,
     make_hotdata_search_tool,
     semantic_search_json,
     vector_distance_sql,
@@ -1027,3 +1032,566 @@ def test_the_metric_error_offers_only_remedies_that_resolve(
         )
     assert "strategy='text'" not in str(raised.value)
     assert "explicit metric" in str(raised.value)
+
+
+# --- rank fusion ------------------------------------------------------------------
+
+
+def _fusable(**kwargs: Any) -> list[Any]:
+    """A table carrying both halves of a fusion: BM25 on text, plain vectors beside it."""
+    return [bm25_index(column=COLUMN), vector_index(columns=["embedding"], **kwargs)]
+
+
+def _embedding() -> MagicMock:
+    embedding = MagicMock()
+    embedding.embed_query.return_value = [0.5, 0.25]
+    return embedding
+
+
+def test_fetch_depth_looks_deeper_than_the_answer() -> None:
+    """Both pathways have to overshoot k, or the lists never overlap enough to fuse."""
+    assert fetch_depth(5) == DEFAULT_FETCH_K
+    assert fetch_depth(50) == 200
+    assert fetch_depth(5, 30) == 30
+
+
+def test_fetch_depth_is_never_below_k() -> None:
+    """A pathway returning fewer candidates than the answer could not fill it alone."""
+    assert fetch_depth(40, 10) == 40
+
+
+def test_hybrid_sql_ranks_both_pathways_and_adds_reciprocal_ranks() -> None:
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5, 0.25],
+        k=5,
+    )
+    assert "ROW_NUMBER() OVER (ORDER BY _distance ASC)" in sql
+    assert "ROW_NUMBER() OVER (ORDER BY score DESC)" in sql
+    assert "FULL OUTER JOIN" in sql
+    assert "COALESCE(1.0 / (60 + near_ranked.rrf_rank), 0)" in sql
+    assert "COALESCE(1.0 / (60 + text_ranked.rrf_rank), 0)" in sql
+
+
+def test_hybrid_sql_keeps_the_shape_the_vector_index_rewrite_survives() -> None:
+    """EXPLAIN shows USearchExec for ORDER BY ... LIMIT inside the CTE, and a full scan
+    for the equivalent that ranks every row first and filters the rank afterwards."""
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5, 0.25],
+        k=5,
+    )
+    near = sql[sql.index("WITH near AS (") : sql.index("near_ranked AS (")]
+    assert "ORDER BY _distance ASC LIMIT 20" in near
+    assert "ROW_NUMBER()" not in near
+
+
+def test_hybrid_sql_bounds_both_pathways_at_the_same_depth() -> None:
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5, 0.25],
+        k=8,
+        fetch_k=40,
+    )
+    assert "LIMIT 40" in sql
+    assert f"'{QUERY}', 40)" in sql
+    assert sql.endswith("LIMIT 8")
+
+
+def test_hybrid_sql_breaks_ties_on_the_join_key() -> None:
+    """Every row found by one pathway alone scores exactly 1/(k + rank), so ties are the
+    normal case rather than an edge one, and an untied sort would order them arbitrarily."""
+    sql = hybrid_search_sql(
+        table=TABLE, column=COLUMN, vector_column="embedding", query=QUERY, vector=[0.5]
+    )
+    assert sql.endswith("DESC, base.id ASC LIMIT 5")
+
+
+def test_hybrid_sql_sorts_on_the_expression_not_the_score_alias() -> None:
+    """The base table is in scope, so a table with its own `score` column would put two
+    candidates under that name and the ranking would rest on which one the engine picks."""
+    sql = hybrid_search_sql(
+        table=TABLE, column=COLUMN, vector_column="embedding", query=QUERY, vector=[0.5]
+    )
+    order_by = sql[sql.rindex("ORDER BY") :]
+    assert "COALESCE(1.0 / (60 + near_ranked.rrf_rank), 0)" in order_by
+    # The BM25 CTE's own `ORDER BY score DESC` is fine: inside it the only `score` is the
+    # one bm25_search returns. It is the final sort, where the base table is in scope,
+    # that must not name the alias.
+    assert not order_by.startswith(f"ORDER BY {SCORE_COLUMN} ")
+
+
+def test_hybrid_sql_never_projects_the_vector_column() -> None:
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5],
+        columns=["id", "embedding", COLUMN],
+    )
+    assert "base.embedding" not in sql
+    assert "base.id" in sql
+    assert f"base.{COLUMN}" in sql
+
+
+def test_hybrid_sql_does_not_project_score_twice() -> None:
+    """The fused rank takes that name, so a table column called score would collide."""
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5],
+        columns=["id", "score"],
+    )
+    assert "base.score" not in sql
+    assert sql.count(" AS score ") == 1
+
+
+def test_hybrid_sql_uses_the_metric_the_index_was_built_with() -> None:
+    sql = hybrid_search_sql(
+        table=TABLE,
+        column=COLUMN,
+        vector_column="embedding",
+        query=QUERY,
+        vector=[0.5],
+        metric="l2",
+    )
+    assert "l2_distance(embedding," in sql
+    assert "cosine_distance" not in sql
+
+
+def test_hybrid_sql_rejects_a_projection_of_nothing_readable() -> None:
+    with pytest.raises(ValueError, match="floods the result"):
+        hybrid_search_sql(
+            table=TABLE,
+            column=COLUMN,
+            vector_column="embedding",
+            query=QUERY,
+            vector=[0.5],
+            columns=["embedding"],
+        )
+
+
+# --- routing into a fusion --------------------------------------------------------
+
+
+def test_both_indexes_and_an_embedding_model_fuse_them(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(
+        client,
+        search_indexes,
+        _fusable(),
+        database_id=managed_db.id,
+        embedding=_embedding(),
+    )
+    tool.invoke({"query": QUERY})
+    sql = executed_sql(client)
+    assert "bm25_search(" in sql
+    assert "cosine_distance(embedding, ARRAY[0.5, 0.25])" in sql
+
+
+def test_a_fused_tool_keeps_the_text_tool_s_name(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """One tool, not two the model chooses between: fusion answers the question the text
+    tool already claimed to answer, so its name and contract stay put."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(
+        client,
+        search_indexes,
+        _fusable(),
+        database_id=managed_db.id,
+        embedding=_embedding(),
+    )
+    assert tool.name == DEFAULT_SEARCH_TOOL_NAME
+
+
+def test_without_an_embedding_model_the_same_table_stays_on_text(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The vector half needs a query vector this side has no way to produce."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(client, search_indexes, _fusable(), database_id=managed_db.id)
+    tool.invoke({"query": QUERY})
+    assert "FULL OUTER JOIN" not in executed_sql(client)
+
+
+def test_strategy_text_opts_out_of_a_fusion(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(
+        client,
+        search_indexes,
+        _fusable(),
+        database_id=managed_db.id,
+        embedding=_embedding(),
+        strategy="text",
+    )
+    tool.invoke({"query": QUERY})
+    assert "FULL OUTER JOIN" not in executed_sql(client)
+
+
+def test_a_provider_backed_index_is_not_fusable(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """It cannot coexist with the BM25 index the other half needs, so a table carrying
+    one has nothing to fuse — and the request has to say so rather than route to text.
+
+    The BM25 index is listed here so the text half is present and the failure is
+    attributable to the vector side; the engine would refuse this combination outright,
+    which is the whole reason a provider-backed index can never be fused."""
+    client = MagicMock()
+    listed = [
+        bm25_index(column=COLUMN),
+        vector_index(columns=["content_embedding"], source_column="content"),
+    ]
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=listed)
+    with pytest.raises(ValueError, match="cannot coexist"):
+        make_hotdata_search_tool(
+            client,
+            table=TABLE,
+            column=COLUMN,
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            strategy="hybrid",
+        )
+
+
+def test_two_vector_columns_under_auto_decline_rather_than_guess(
+    databases_api: MagicMock,
+    search_indexes: MagicMock,
+    managed_db: ManagedDatabase,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The engine records no link saying which vector column goes with which text, so
+    picking one would be a guess — and breaking a working text tool over it is worse."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    listed = [
+        bm25_index(column=COLUMN),
+        vector_index(name="a", columns=["title_vec"]),
+        vector_index(name="b", columns=["body_vec"]),
+    ]
+    with caplog.at_level("INFO"):
+        tool = _tool_for(
+            client, search_indexes, listed, database_id=managed_db.id, embedding=_embedding()
+        )
+    tool.invoke({"query": QUERY})
+    assert "FULL OUTER JOIN" not in executed_sql(client)
+    assert "more than one vector index" in caplog.text
+
+
+def test_two_vector_columns_under_strategy_hybrid_raise_and_name_them(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Asked for by name, silently getting BM25 alone is something the caller cannot see."""
+    client = MagicMock()
+    listed = [
+        bm25_index(column=COLUMN),
+        vector_index(name="a", columns=["title_vec"]),
+        vector_index(name="b", columns=["body_vec"]),
+    ]
+    with pytest.raises(ValueError, match="body_vec, title_vec"):
+        _tool_for(
+            client,
+            search_indexes,
+            listed,
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            strategy="hybrid",
+        )
+
+
+def test_naming_the_vector_column_resolves_the_ambiguity(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    listed = [
+        bm25_index(column=COLUMN),
+        vector_index(name="a", columns=["title_vec"]),
+        vector_index(name="b", columns=["body_vec"]),
+    ]
+    tool = _tool_for(
+        client,
+        search_indexes,
+        listed,
+        database_id=managed_db.id,
+        embedding=_embedding(),
+        semantic_column="body_vec",
+    )
+    tool.invoke({"query": QUERY})
+    assert "cosine_distance(body_vec," in executed_sql(client)
+
+
+def test_a_semantic_column_naming_nothing_raises_even_under_auto(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The caller has asserted something about the table that is not true; carrying on
+    would leave them believing a fusion is running."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    with pytest.raises(ValueError, match="names no vector index"):
+        _tool_for(
+            client,
+            search_indexes,
+            _fusable(),
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            semantic_column="nope",
+        )
+
+
+def test_an_unusable_metric_declines_the_fusion_rather_than_guessing(
+    databases_api: MagicMock,
+    search_indexes: MagicMock,
+    managed_db: ManagedDatabase,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ranking by a function the vectors were not indexed for returns rows in a confident
+    order that means nothing, and would poison the fused ranking rather than half of it."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    with caplog.at_level("INFO"):
+        tool = _tool_for(
+            client,
+            search_indexes,
+            _fusable(metric=None),
+            database_id=managed_db.id,
+            embedding=_embedding(),
+        )
+    tool.invoke({"query": QUERY})
+    assert "FULL OUTER JOIN" not in executed_sql(client)
+    assert "reports no metric" in caplog.text
+
+
+def test_a_fused_search_clamps_k_to_the_row_limit(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    tool = _tool_for(
+        client,
+        search_indexes,
+        _fusable(),
+        database_id=managed_db.id,
+        embedding=_embedding(),
+        max_rows=10,
+    )
+    payload = json.loads(tool.invoke({"query": QUERY, "k": 200}))
+    assert executed_sql(client).endswith("LIMIT 10")
+    warning = payload["metadata"][CLIENT_WARNING_KEY]
+    assert "reduced to 10" in warning
+    # The remedy it points at is the text half only, and this warning can land in the same
+    # client_warning as HYBRID_REMEDY, which already says so.
+    assert "ranks on wording alone" in warning
+
+
+# --- what a fused route tells the model -------------------------------------------
+
+
+def test_hybrid_description_names_the_capability_not_the_index() -> None:
+    """Same rule as the other two routes: the contract has to outlive the strategy."""
+    description = default_search_description(TABLE, COLUMN, hybrid=True).lower()
+    for mechanism in ("bm25", "tantivy", "hnsw", "vector", "embedding", "fusion"):
+        assert mechanism not in description, f"description leaks the mechanism {mechanism!r}"
+
+
+def test_hybrid_description_says_it_matches_meaning_too() -> None:
+    """Understating the tool costs exactly the recall fusion was added to win back."""
+    description = default_search_description(TABLE, COLUMN, hybrid=True)
+    assert "what it means" in description
+    assert "what it means" not in default_search_description(TABLE, COLUMN)
+
+
+def test_hybrid_description_says_sql_ranking_is_the_narrower_half() -> None:
+    """Only the text half is expressible in SQL, and the SQL tool offers exactly that —
+    so this has to say the composed form is narrower rather than equivalent."""
+    description = default_search_description(TABLE, COLUMN, hybrid=True)
+    assert "narrower than this tool" in description
+
+
+def test_the_sql_description_does_not_call_a_fused_tool_the_same_ranking(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Both descriptions reach the model in one prompt, so the SQL one cannot claim the
+    search tool does what SQL does when the search tool does strictly more."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=_fusable())
+    tools = make_hotdata_tools(
+        client,
+        database_id=managed_db.id,
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_embedding=_embedding(),
+    )
+    sql_tool = next(tool for tool in tools if tool.name == "hotdata_execute_sql")
+    assert "does the same ranking" not in sql_tool.description
+    assert "combines this ranking with one by meaning" in sql_tool.description
+
+
+def _no_such_column() -> QueryResult:
+    """What the information_schema lookup returns for a column the table lacks."""
+    return QueryResult(
+        columns=["column_name"],
+        rows=[],
+        row_count=0,
+        result_id="res_none",
+        query_run_id="run_none",
+        execution_time_ms=1,
+        warning=None,
+        error_message=None,
+    )
+
+
+def test_a_table_with_no_join_key_declines_the_fusion(
+    databases_api: MagicMock,
+    search_indexes: MagicMock,
+    managed_db: ManagedDatabase,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The two rankings are joined on the key, so without one there is nothing to fuse."""
+    client = MagicMock()
+    client.execute_sql.return_value = _no_such_column()
+    with caplog.at_level("INFO"):
+        tool = _tool_for(
+            client, search_indexes, _fusable(), database_id=managed_db.id, embedding=_embedding()
+        )
+    tool.invoke({"query": QUERY})
+    assert "FULL OUTER JOIN" not in executed_sql(client)
+    assert "nothing to be joined on" in caplog.text
+
+
+def test_asking_for_a_fusion_without_a_join_key_raises(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = _no_such_column()
+    with pytest.raises(ValueError, match="nothing to be joined on"):
+        _tool_for(
+            client,
+            search_indexes,
+            _fusable(),
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            strategy="hybrid",
+        )
+
+
+def test_a_fusion_needs_its_text_half_too(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """A plain vector index alone is half a fusion. Reaching a non-empty candidate list
+    means the listing succeeded, so a missing BM25 index is a fact about the table rather
+    than an unanswered question, and `hybrid` is documented to raise on exactly this."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    with pytest.raises(ValueError, match="no text ranking to fuse with"):
+        _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=["embedding"])],
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            strategy="hybrid",
+        )
+
+
+def test_a_missing_text_half_under_auto_declines_rather_than_claiming_hybrid(
+    databases_api: MagicMock,
+    search_indexes: MagicMock,
+    managed_db: ManagedDatabase,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The call failed on this table before fusion existed and still does — the engine
+    rejects the column. What must not happen is the description claiming the tool matches
+    meaning, for a tool that cannot run at all."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    with caplog.at_level("INFO"):
+        tool = _tool_for(
+            client,
+            search_indexes,
+            [vector_index(columns=["embedding"])],
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            columns=["id"],
+        )
+    assert "no text ranking to fuse with" in caplog.text
+    assert "what it means" not in tool.description
+
+
+def test_a_pending_text_index_does_not_count_as_the_text_half(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """`list_search_indexes` drops indexes that are not ready, so a BM25 index still
+    building leaves the same gap as no index at all."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    with pytest.raises(ValueError, match="no text ranking to fuse with"):
+        _tool_for(
+            client,
+            search_indexes,
+            [bm25_index(column=COLUMN, status="building"), vector_index(columns=["embedding"])],
+            database_id=managed_db.id,
+            embedding=_embedding(),
+            strategy="hybrid",
+        )
+
+
+def test_fusable_vector_indexes_excludes_provider_backed_ones() -> None:
+    """The one that lets the engine embed a query is the one that forbids BM25 beside it."""
+    from hotdata_langchain.indexes import SearchIndex, fusable_vector_indexes
+
+    plain = SearchIndex(column="embedding", kind="semantic", index_type="vector", ready=True)
+    backed = SearchIndex(
+        column="content",
+        kind="semantic",
+        index_type="vector",
+        ready=True,
+        vector_column="content_embedding",
+        embeds_query=True,
+    )
+    text = SearchIndex(column="content", kind="text", index_type="bm25", ready=True)
+    assert fusable_vector_indexes([plain, backed, text]) == [plain]
+
+
+def test_building_a_fused_tool_asks_for_the_key_column_once(
+    databases_api: MagicMock, search_indexes: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """Resolving the fusion and building the default projection ask the same question of
+    the same table, and only one of them needs to pay for the answer."""
+    client = MagicMock()
+    client.execute_sql.return_value = _hit()
+    _tool_for(
+        client,
+        search_indexes,
+        _fusable(),
+        database_id=managed_db.id,
+        embedding=_embedding(),
+    )
+    lookups = [
+        call
+        for call in client.execute_sql.call_args_list
+        if "information_schema.columns" in call.args[0]
+    ]
+    assert len(lookups) == 1, f"expected one key-column lookup, ran {len(lookups)}"
