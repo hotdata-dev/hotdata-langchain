@@ -539,13 +539,15 @@ def clamp_warning(
     """
     if requested <= ceiling:
         return None
-    narrower = ", which ranks on wording alone" if hybrid else ""
+    # The clause attaches to "aggregate there", not to the tail: trailing it after
+    # "raising k here" would make raising k the thing that ranks on wording alone.
+    narrower = ", which ranks on wording alone," if hybrid else ""
     return (
         f"Asked for k={requested}, but this tool ranks at most {ceiling} rows, so k was "
         f"reduced to {ceiling} before searching. These are the top {ceiling} matches, "
         f"not a sample of {requested}, and rows beyond {ceiling} were never ranked. To "
-        f"reason over a wider cohort, call {function} inside SQL and aggregate there "
-        f"rather than raising k here{narrower}."
+        f"reason over a wider cohort, call {function} inside SQL and aggregate there"
+        f"{narrower} rather than raising k here."
     )
 
 
@@ -800,9 +802,12 @@ def resolve_search_route(
     index, since then there is only one thing it could be. Two of them under ``auto``
     declines the fusion and says so in the log, the same fail-open stance the rest of this
     function takes, while ``strategy="hybrid"`` raises and names the candidates. A
-    ``semantic_column`` that names no plain vector index always raises, under every
-    strategy: the caller has stated something about the table that is not true, and
-    silently ignoring it would leave them believing a fusion is running.
+    ``semantic_column`` that names no plain vector index raises under every strategy once
+    there is a text half to fuse with: the caller has stated something about the table that
+    is not true, and silently ignoring it would leave them believing a fusion is running. A
+    table with no ready BM25 index on the searched column declines before the name is
+    reached, so a misspelling there is reported as the missing text half instead — which is
+    the more useful thing to say, since that tool cannot run at all.
 
     ``strategy="text"`` is the way to ask for BM25 alone on a table that could be fused.
     """
