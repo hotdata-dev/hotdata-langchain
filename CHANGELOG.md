@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `hotdata_describe_tables` accepts a `catalog.schema.table` reference, which it used to
+  reject. The SQL tool's description tells the model to address tables with all three parts,
+  and both descriptions reach it in one prompt, so following one turned the other into an
+  error the model had to recover from — measured twice in one agent run. Bare and
+  `schema.table` references are unchanged, and a catalog, when given, now narrows the lookup,
+  which matters on a database exposing more than one. A reference naming a catalog no managed
+  table answers to reports the table as missing, rather than as declared and awaiting a load.
+- `hotdata_describe_tables` matches a table however the reference is cased. The engine
+  lowercases identifiers when it stores them, so `information_schema` holds the lower form and
+  the exact filter this built found nothing for `PUBLIC.listings` — while the same reference in
+  a `FROM` clause resolves, because a bare reference in SQL is case-insensitive. Describing a
+  table was the one place where the case a model happened to type decided whether it got an
+  answer.
+
+### Changed
+
+- On a fused search route, the closing advice about aggregating in SQL states the composed
+  form's cohort as advice rather than as a comparison against the tool. It read "Ranking there
+  goes by the words alone, so it is narrower than this tool", which put a reason to decline
+  immediately after the instruction to compose. The qualifier remains, since only the text half
+  of a fusion is expressible in SQL, but it now says how to use the composed form.
+
+  Whether this changes what a model does is **not established**. It was prompted by a fused
+  route falling back to `ILIKE` and to pasted id literals, but on resampling the unfused route —
+  which never carried the sentence — falls back at least as often, so the earlier reading was
+  drawn from noise. The change stands on the copy being wrong either way.
+
 ## [0.11.0] - 2026-08-21
 
 ### Added

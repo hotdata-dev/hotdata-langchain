@@ -1422,11 +1422,15 @@ def test_hybrid_description_says_it_matches_meaning_too() -> None:
     assert "what it means" not in default_search_description(TABLE, COLUMN)
 
 
-def test_hybrid_description_says_sql_ranking_is_the_narrower_half() -> None:
-    """Only the text half is expressible in SQL, and the SQL tool offers exactly that —
-    so this has to say the composed form is narrower rather than equivalent."""
+def test_hybrid_description_qualifies_the_composed_form_without_discouraging_it() -> None:
+    """Only the text half is expressible in SQL, so this has to say the composed cohort is
+    word-matched. It must not close on a comparison against this tool: that sat right after
+    the instruction to compose and read as a reason to decline it."""
     description = default_search_description(TABLE, COLUMN, hybrid=True)
-    assert "narrower than this tool" in description
+    assert "matched on the words" in description
+    assert "narrower than this tool" not in description
+    # The instruction to compose survives the qualifier rather than being undercut by it.
+    assert "rank inside SQL instead" in description
 
 
 def test_the_sql_description_does_not_call_a_fused_tool_the_same_ranking(
