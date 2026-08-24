@@ -428,10 +428,42 @@ def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
     )
 
 
-def test_describe_description_names_the_same_reference_form_as_the_sql_tool() -> None:
-    """Both descriptions reach the model in one prompt, and the SQL one tells it to
-    address tables with all three parts."""
-    assert "default.public.listings" in default_describe_description()
+def test_describe_description_names_the_three_part_form_without_inventing_a_catalog() -> None:
+    """Both descriptions reach the model in one prompt, and the SQL one tells it to address
+    tables with all three parts — so this has to name that form. With no catalog resolved
+    there is no correct constant to use for it: a managed database answers to 'default' and
+    an attached source to its alias."""
+    described = default_describe_description()
+    assert "catalog.schema.table" in described
+    assert "default.public.listings" not in described
+
+
+def test_describe_description_uses_the_resolved_catalog_when_there_is_one() -> None:
+    assert "f1.public.listings" in default_describe_description(catalogs=["f1"])
+    assert "default.public.listings" in default_describe_description(catalogs=["default"])
+
+
+def test_describe_description_names_no_catalog_when_the_database_exposes_several() -> None:
+    """Naming one of them would send the model to the wrong catalog for half the tables,
+    which the catalog filter then reports as a missing table rather than as an error."""
+    described = default_describe_description(catalogs=["default", "f1"])
+    assert "catalog.schema.table" in described
+    assert "f1.public.listings" not in described
+
+
+def test_the_two_descriptions_agree_about_the_catalog_on_an_attached_source(
+    databases_api: MagicMock, managed_db: ManagedDatabase
+) -> None:
+    """The defect this guards: a hardcoded 'default' put the describe tool at odds with the
+    SQL tool, which resolves the catalog per database. A model following the example would
+    then get 'no table named default.public.results', for a table that does exist."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(["table_catalog"], [["f1"]])
+    tools = {t.name: t for t in make_hotdata_tools(client, database_id=managed_db.id)}
+    described = tools["hotdata_describe_tables"].description
+    assert "f1.public.listings" in described
+    assert "default.public.listings" not in described
+    assert "Here the catalog is 'f1'." in tools["hotdata_execute_sql"].description
 
 
 def test_describe_accepts_a_three_part_reference_end_to_end() -> None:

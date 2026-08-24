@@ -292,13 +292,26 @@ def describe_tables_json(
     return json.dumps(payload, indent=2)
 
 
-def default_describe_description(*, column_stats: bool = True) -> str:
+def default_describe_description(
+    *,
+    column_stats: bool = True,
+    catalogs: Sequence[str] | None = None,
+) -> str:
     """Return the agent-facing description for the schema tool.
 
     ``column_stats`` adds the sentence about ``non_null``. It is stated in the
     description as well as in the payload because the point of the counts is to change
     what the model plans before it reads any rows, and a column it never asked about is
     a column whose emptiness it never sees.
+
+    ``catalogs`` names the catalogs the tools are scoped to, and the worked example uses
+    one only when there is exactly one to use. There is no correct constant to fall back
+    on: a managed database answers to ``default`` and an attached source answers to its
+    attachment alias, so a hardcoded ``default`` would put this description at odds with
+    the SQL tool's — which resolves the catalog per database — in the one prompt they both
+    reach. It would also send a model following the example to a reference the catalog
+    filter then finds nothing for, reported as a missing table rather than as the loud
+    format error that used to name the accepted forms.
     """
     populated = (
         "Each column also reports 'non_null', how many rows actually hold a value: a "
@@ -307,10 +320,12 @@ def default_describe_description(*, column_stats: bool = True) -> str:
         if column_stats
         else ""
     )
+    known = list(catalogs or ())
+    full = f"'{known[0]}.public.listings'" if len(known) == 1 else "the full 'catalog.schema.table'"
     return (
         "Discover what data is available before writing a query. Called with no "
         "arguments it lists every table with how many columns it has; called with a "
-        "table name ('listings', 'public.listings' or 'default.public.listings') it "
+        f"table name ('listings', 'public.listings' or {full}) it "
         "returns that table's columns and their types.\n"
         f"{populated}"
         "Use it whenever you are unsure a table or column exists — guessing a column "
@@ -326,6 +341,7 @@ def make_hotdata_describe_tables_tool(
     description: str | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
     column_stats: bool = True,
+    catalogs: Sequence[str] | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
 
@@ -347,8 +363,8 @@ def make_hotdata_describe_tables_tool(
         """List the tables in the database, or one table's columns and types.
 
         Args:
-            table: the table to describe, as 'listings', 'public.listings' or
-                'default.public.listings'. Omit it to list every table in the database
+            table: the table to describe, as 'listings', 'public.listings' or the full
+                'catalog.schema.table'. Omit it to list every table in the database
                 instead.
         """
         return describe_tables_json(
@@ -362,6 +378,7 @@ def make_hotdata_describe_tables_tool(
     return StructuredTool.from_function(
         func=hotdata_describe_tables,
         name=name,
-        description=description or default_describe_description(column_stats=column_stats),
+        description=description
+        or default_describe_description(column_stats=column_stats, catalogs=catalogs),
         parse_docstring=True,
     )

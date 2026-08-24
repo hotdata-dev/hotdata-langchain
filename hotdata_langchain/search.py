@@ -619,8 +619,7 @@ def default_search_description(
         if hybrid
         else ""
     )
-    # Advice for using the composed form, not a comparison against this tool.
-    narrower = (
+    composed_hint = (
         " Its cohort is matched on the words, so give it the wording a matching row would use."
         if hybrid
         else ""
@@ -629,7 +628,7 @@ def default_search_description(
         "Use this to list or inspect the matches themselves. When the answer aggregates "
         "over the matches rather than listing them, rank inside SQL instead — that keeps "
         "the whole cohort in the query, where carrying values back as literals caps it at "
-        f"this tool's row limit.{narrower}"
+        f"this tool's row limit.{composed_hint}"
     )
     return (
         f"Find rows of {table} whose '{column}' text is relevant to a natural-language "

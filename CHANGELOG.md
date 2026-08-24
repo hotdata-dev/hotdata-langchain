@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `schema.table` references are unchanged, and a catalog, when given, now narrows the lookup,
   which matters on a database exposing more than one. A reference naming a catalog no managed
   table answers to reports the table as missing, rather than as declared and awaiting a load.
+- `hotdata_describe_tables` names a catalog in its worked example only where the database
+  exposes exactly one, resolved from `information_schema` rather than assumed, and
+  `make_hotdata_describe_tables_tool` takes `catalogs=` to say which. A hardcoded `default` is
+  right for a managed database and wrong for an attached source, whose tables answer to the
+  attachment alias — so on one of those it disagreed with the SQL tool's description, which
+  resolves the catalog per database, in the one prompt both reach.
 - `hotdata_describe_tables` matches a table however the reference is cased. The engine
   lowercases identifiers when it stores them, so `information_schema` holds the lower form and
   the exact filter this built found nothing for `PUBLIC.listings` — while the same reference in

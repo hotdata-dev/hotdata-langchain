@@ -552,6 +552,7 @@ def make_hotdata_tools(
                 client,
                 database_id=database,
                 column_stats=describe_column_stats,
+                catalogs=catalogs,
             )
         )
 
