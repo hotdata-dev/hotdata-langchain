@@ -112,6 +112,14 @@ pauses the graph rather than reporting the pause as an error.
 table with its column count; called with a table name it returns that table's columns and
 types. Without it an agent has to guess column names, and a guess that misses fails the query.
 
+It takes a table as `listings`, `public.listings` or the full `catalog.schema.table`, each part
+narrowing the lookup, in whatever case the reference is written. The full form is accepted
+because the SQL tool's description tells the model to address tables with all three parts, and
+both descriptions reach it in one prompt — so a model that follows one must not be corrected by
+the other. The worked example in the description names a catalog only where the database
+exposes exactly one, since `default` is right for a managed database and wrong for an attached
+source.
+
 ```python
 tools = hl.make_hotdata_tools(client, database_id="dbid...")            # included
 tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=False)  # omitted

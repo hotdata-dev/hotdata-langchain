@@ -585,13 +585,25 @@ def default_search_description(
     ``hybrid`` says the route also ranks by meaning, and adds two things. What the model
     can do differently — phrase a query as the idea rather than as the words it expects
     rows to use — because a description that understates the tool costs exactly the recall
-    fusion was added to win back. And a qualifier on the advice about aggregating in SQL:
-    only the text half of a fusion is expressible there, so that route is still the way to
-    hold a whole cohort in one query but ranks on wording alone. Saying so keeps this
-    honest beside the SQL tool's description, which reaches the model in the same prompt
-    and can only offer the text half. Neither addition names a mechanism, so the rule that
-    this contract outlives the retrieval strategy behind it still holds — the function to
-    call is named once, in the SQL tool's description, rather than in both.
+    fusion was added to win back. And a note on the composed form, since only the text half
+    of a fusion is expressible in SQL.
+
+    That second one is a qualifier and not a comparison, deliberately. Written as "ranking
+    there goes by the words alone, so it is narrower than this tool" it sat immediately
+    after the instruction to rank in SQL and read as a reason not to take it. Aggregating
+    over a whole cohort matters more than which of the two rankings ordered it, so the
+    sentence says how to use the composed form rather than how it compares.
+
+    That the wording changes what a model does is unestablished. It was prompted by a fused
+    route falling back to ``ILIKE`` and to pasted id literals, but the unfused route — which
+    never carried the sentence — was then measured falling back at least as often, so the
+    original reading came from too few samples to support it. What survives is that a
+    disincentive placed immediately after the instruction it undercuts is bad copy on its
+    own terms.
+
+    Neither addition names a mechanism, so the rule that this contract outlives the
+    retrieval strategy behind it still holds — the function to call is named once, in the
+    SQL tool's description, rather than in both.
     """
     if not columns:
         returns = "Returns the best-matching rows ordered by a 'score' column, highest first"
@@ -607,8 +619,8 @@ def default_search_description(
         if hybrid
         else ""
     )
-    narrower = (
-        " Ranking there goes by the words alone, so it is narrower than this tool."
+    composed_hint = (
+        " Its cohort is matched on the words, so give it the wording a matching row would use."
         if hybrid
         else ""
     )
@@ -616,7 +628,7 @@ def default_search_description(
         "Use this to list or inspect the matches themselves. When the answer aggregates "
         "over the matches rather than listing them, rank inside SQL instead — that keeps "
         "the whole cohort in the query, where carrying values back as literals caps it at "
-        f"this tool's row limit.{narrower}"
+        f"this tool's row limit.{composed_hint}"
     )
     return (
         f"Find rows of {table} whose '{column}' text is relevant to a natural-language "
