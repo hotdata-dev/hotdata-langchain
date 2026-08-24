@@ -112,6 +112,11 @@ pauses the graph rather than reporting the pause as an error.
 table with its column count; called with a table name it returns that table's columns and
 types. Without it an agent has to guess column names, and a guess that misses fails the query.
 
+It takes a table as `listings`, `public.listings` or `default.public.listings`, each part
+narrowing the lookup. The full form is accepted because the SQL tool's description tells the
+model to address tables with all three parts, and both descriptions reach it in one prompt —
+so a model that follows one must not be corrected by the other.
+
 ```python
 tools = hl.make_hotdata_tools(client, database_id="dbid...")            # included
 tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=False)  # omitted

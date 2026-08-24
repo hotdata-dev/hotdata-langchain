@@ -16,21 +16,48 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DESCRIBE_TOOL_NAME = "hotdata_describe_tables"
 
+#: Catalog a managed table answers to. An attached source's tables answer to the
+#: attachment alias instead, so a reference naming any other catalog cannot be a managed
+#: table on this database — which is what makes the declared-but-empty check answerable.
+MANAGED_CATALOG = "default"
+
 #: Cap on columns returned for a single table, so one wide table cannot flood the context.
 DEFAULT_MAX_COLUMNS = 200
 
 
-def _split_table(table: str) -> tuple[str | None, str]:
-    """Split ``schema.table`` or a bare ``table`` into its parts, validating both."""
+def _split_table(table: str) -> tuple[str | None, str | None, str]:
+    """Split a table reference into ``(catalog, schema, name)``, validating each part.
+
+    All three forms are accepted — ``table``, ``schema.table`` and
+    ``catalog.schema.table`` — because the SQL tool's description tells the model to
+    address tables with all three parts, and both descriptions reach it in one prompt.
+    Rejecting the form the other tool teaches made the model's first correct instinct an
+    error it had to recover from, which was measured costing a call on a real run.
+
+    The database is already scoped, so a catalog is redundant here rather than wrong; it
+    is used as a filter when given, which is what makes it meaningful on a database
+    exposing more than one.
+
+    Parts come back lowercased, because that is the form every caller needs. The engine
+    lowercases identifiers when it stores them, so ``information_schema`` holds the lower
+    form and an exact filter on ``Public`` matches nothing — while ``FROM
+    DEFAULT.public.listings`` resolves fine, a bare reference in SQL being
+    case-insensitive. Without this, describing a table was the one place where the case
+    the model typed decided whether it got an answer.
+    """
     parts = table.split(".")
-    if len(parts) > 2:
+    if len(parts) > 3:
         raise ValueError(
-            "table must be 'table' or 'schema.table' (the database is already scoped), "
-            f"got {table!r}"
+            f"table must be 'table', 'schema.table' or 'catalog.schema.table', got {table!r}"
         )
     for part in parts:
         validate_identifier(part, label="table")
-    return (parts[0], parts[1]) if len(parts) == 2 else (None, parts[0])
+    lowered = [part.lower() for part in parts]
+    if len(lowered) == 3:
+        return (lowered[0], lowered[1], lowered[2])
+    if len(lowered) == 2:
+        return (None, lowered[0], lowered[1])
+    return (None, None, lowered[0])
 
 
 def table_overview_sql() -> str:
@@ -44,11 +71,19 @@ def table_overview_sql() -> str:
 
 
 def table_columns_sql(table: str, *, limit: int = DEFAULT_MAX_COLUMNS) -> str:
-    """Return SQL listing one table's columns and types, in declaration order."""
-    schema, name = _split_table(table)
+    """Return SQL listing one table's columns and types, in declaration order.
+
+    ``table`` may name a catalog, a schema, both or neither; each part given narrows the
+    lookup. A catalog matters on a database exposing more than one — an attached source's
+    tables answer to its alias rather than to ``default`` — where the same schema and
+    table name can exist under both.
+    """
+    catalog, schema, name = _split_table(table)
     where = f"WHERE table_name = '{name}'"
     if schema is not None:
         where += f" AND table_schema = '{schema}'"
+    if catalog is not None:
+        where += f" AND table_catalog = '{catalog}'"
     return (
         f"SELECT table_schema, table_name, column_name, data_type "
         f"FROM information_schema.columns {where} "
@@ -136,10 +171,20 @@ def _declared_but_empty(
 
     The schema is filtered by the listing call rather than by reading it back off each
     record, matching how ``HotdataVectorStore`` asks the same question.
+
+    A catalog other than :data:`MANAGED_CATALOG` answers ``False`` outright. The listing
+    takes no catalog filter, so dropping the part would let ``wrong.public.listings`` match
+    the managed ``public.listings`` and report a table that does not exist here as one
+    awaiting a load — a false claim whose remedy points at work that cannot be done. The
+    column lookup does filter on the catalog, so without this the two checks disagree.
     """
     if database is None:
         return False
-    schema, name = _split_table(table)
+    # `_split_table` lowercases, so this compares the stored form rather than what the
+    # model happened to type.
+    catalog, schema, name = _split_table(table)
+    if catalog is not None and catalog != MANAGED_CATALOG:
+        return False
     try:
         return any(
             entry.table == name for entry in client.list_managed_tables(database, schema=schema)
@@ -265,8 +310,8 @@ def default_describe_description(*, column_stats: bool = True) -> str:
     return (
         "Discover what data is available before writing a query. Called with no "
         "arguments it lists every table with how many columns it has; called with a "
-        "table name ('listings' or 'public.listings') it returns that table's columns "
-        "and their types.\n"
+        "table name ('listings', 'public.listings' or 'default.public.listings') it "
+        "returns that table's columns and their types.\n"
         f"{populated}"
         "Use it whenever you are unsure a table or column exists — guessing a column "
         "name that is not there makes the query fail."
@@ -302,8 +347,9 @@ def make_hotdata_describe_tables_tool(
         """List the tables in the database, or one table's columns and types.
 
         Args:
-            table: the table to describe, as 'listings' or 'public.listings'. Omit it
-                to list every table in the database instead.
+            table: the table to describe, as 'listings', 'public.listings' or
+                'default.public.listings'. Omit it to list every table in the database
+                instead.
         """
         return describe_tables_json(
             client,

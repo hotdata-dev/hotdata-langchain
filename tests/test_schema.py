@@ -88,10 +88,34 @@ def test_columns_sql_applies_the_column_cap() -> None:
     assert table_columns_sql("listings", limit=10).endswith("LIMIT 10")
 
 
-@pytest.mark.parametrize("table", ["a.b.c", "list ings", "list'ings", "1listings", "", "public."])
+@pytest.mark.parametrize("table", ["a.b.c.d", "list ings", "list'ings", "1listings", "", "public."])
 def test_columns_sql_rejects_bad_table_reference(table: str) -> None:
     with pytest.raises(ValueError):
         table_columns_sql(table)
+
+
+def test_columns_sql_accepts_the_reference_form_the_sql_tool_teaches() -> None:
+    """The SQL tool's description says to address tables with all three parts, and both
+    descriptions reach the model in one prompt — so rejecting that form here made the
+    model's first correct instinct an error it had to recover from."""
+    sql = table_columns_sql("default.public.listings")
+    assert "table_name = 'listings'" in sql
+    assert "table_schema = 'public'" in sql
+    assert "table_catalog = 'default'" in sql
+
+
+def _where(sql: str) -> str:
+    """Return just the WHERE clause: the projection names these columns regardless."""
+    return sql[sql.index("WHERE") : sql.index("ORDER BY")]
+
+
+def test_columns_sql_narrows_only_by_the_parts_it_was_given() -> None:
+    bare = _where(table_columns_sql("listings"))
+    assert "table_schema" not in bare
+    assert "table_catalog" not in bare
+    two = _where(table_columns_sql("public.listings"))
+    assert "table_schema = 'public'" in two
+    assert "table_catalog" not in two
 
 
 # --- JSON payloads ----------------------------------------------------------------
@@ -323,6 +347,45 @@ def test_declared_but_unloaded_table_is_not_reported_as_missing(
     assert "no data yet" in payload["note"]
 
 
+def test_a_declared_but_unloaded_table_is_still_found_through_its_catalog(
+    managed_db: ManagedDatabase,
+) -> None:
+    """The catalog gate must not cost the note on the form the SQL tool teaches: a managed
+    table does answer to `default`, so the three-part reference is the correct one."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"], []
+    )
+    client.list_managed_tables.return_value = [
+        SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
+    ]
+    payload = json.loads(
+        describe_tables_json(client, table="default.public.customer", database=managed_db)
+    )
+    assert "no data yet" in payload["note"]
+
+
+def test_a_table_under_a_wrong_catalog_is_missing_rather_than_unloaded(
+    managed_db: ManagedDatabase,
+) -> None:
+    """The column lookup filters on the catalog and finds nothing; the listing takes no
+    catalog filter, so dropping the part would match a real managed table of the same name
+    and report a table that does not exist here as one awaiting a load. That note is false
+    and its remedy points at work that cannot be done."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"], []
+    )
+    client.list_managed_tables.return_value = [
+        SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
+    ]
+    payload = json.loads(
+        describe_tables_json(client, table="wrong.public.customer", database=managed_db)
+    )
+    assert "note" not in payload
+    assert "no table named" in payload["error"]
+
+
 def test_a_genuinely_missing_table_still_reports_an_error(managed_db: ManagedDatabase) -> None:
     client = MagicMock()
     client.execute_sql.return_value = result(
@@ -363,3 +426,55 @@ def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
     assert executed_sqls(client)[1] == (
         'SELECT COUNT(*) AS row_count, COUNT("id") AS n0 FROM public.listings'
     )
+
+
+def test_describe_description_names_the_same_reference_form_as_the_sql_tool() -> None:
+    """Both descriptions reach the model in one prompt, and the SQL one tells it to
+    address tables with all three parts."""
+    assert "default.public.listings" in default_describe_description()
+
+
+def test_describe_accepts_a_three_part_reference_end_to_end() -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"],
+        [["public", "listings", "id", "Utf8"]],
+    )
+    payload = json.loads(
+        describe_tables_json(client, table="default.public.listings", column_stats=False)
+    )
+    sql = client.execute_sql.call_args.args[0]
+    assert "table_catalog = 'default'" in sql
+    assert payload["columns"][0]["name"] == "id"
+
+
+@pytest.mark.parametrize(
+    "table",
+    ["DEFAULT.public.listings", "default.PUBLIC.listings", "Default.Public.Listings"],
+)
+def test_columns_sql_matches_the_stored_case_whatever_case_was_typed(table: str) -> None:
+    """The engine lowercases identifiers when it stores them, so an exact filter on
+    'Public' matches nothing — while `FROM Default.Public.Listings` resolves fine. Without
+    this, describing a table was the one place case decided whether there was an answer."""
+    where = _where(table_columns_sql(table))
+    assert "table_name = 'listings'" in where
+    assert "table_schema = 'public'" in where
+    assert "table_catalog = 'default'" in where
+
+
+def test_an_uppercased_managed_catalog_still_finds_an_unloaded_table(
+    managed_db: ManagedDatabase,
+) -> None:
+    """The gate compares the stored form, so case does not turn the managed catalog into
+    one no managed table answers to."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"], []
+    )
+    client.list_managed_tables.return_value = [
+        SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
+    ]
+    payload = json.loads(
+        describe_tables_json(client, table="DEFAULT.public.customer", database=managed_db)
+    )
+    assert "no data yet" in payload["note"]
