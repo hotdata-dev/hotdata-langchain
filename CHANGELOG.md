@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hotdata_describe_tables` names a catalog in its worked example only where the database
   exposes exactly one, resolved from `information_schema` rather than assumed, and
   `make_hotdata_describe_tables_tool` takes `catalogs=` to say which. A hardcoded `default` is
-  right for a managed database and wrong for an attached source, whose tables answer to the
+  right for an instant database and wrong for an attached source, whose tables answer to the
   attachment alias — so on one of those it disagreed with the SQL tool's description, which
   resolves the catalog per database, in the one prompt both reach.
 - `hotdata_describe_tables` matches a table however the reference is cased. The engine
@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The tools describe a database the way the product now names it. Renaming "managed
+  database" to "instant database" (#83) missed one string, split across two source lines, so
+  `hotdata_load_managed_table` described a table as declared on a "managed database" while
+  the listing and creation tools called the same thing an "instant database". All three
+  descriptions reach a model in one prompt, and two names for one thing is a contradiction it
+  has to resolve. The same rename left "managed database" in three docstrings, which reach a
+  maintainer rather than a model; those are corrected too. Tool names and the Python API are
+  unchanged.
 - On a fused search route, the closing advice about aggregating in SQL states the composed
   form's cohort as advice rather than as a comparison against the tool. It read "Ranking there
   goes by the words alone, so it is narrower than this tool", which put a reason to decline

@@ -93,7 +93,7 @@ def sql_tool_description(
     than the current defect, so it stays accurate once that is fixed.
 
     ``catalogs`` names the catalogs the tools are scoped to, so the description can state
-    the catalog outright. There is no universal answer to state instead: a managed
+    the catalog outright. There is no universal answer to state instead: an instant
     database answers to `default`, an attached source answers to its attachment alias,
     and the database record reports `default` either way. With none supplied the model is
     pointed at `information_schema` rather than given a rule that holds for one of the two
@@ -321,7 +321,7 @@ def make_hotdata_tools(
     hold a value in each column, so an empty column is visible as such rather than as an
     ordinary typed one; it costs one aggregate query per table described.
 
-    ``management_tools`` (on by default) adds the three tools that work on managed
+    ``management_tools`` (on by default) adds the three tools that work on instant
     databases themselves — listing, creating and loading. Turn it off for an agent that
     reads one fixed database, where they are surface the model can only misuse. The flag
     is not called ``read_only``: listing databases is itself a read, so the set it removes
@@ -530,7 +530,7 @@ def make_hotdata_tools(
             func=hotdata_load_managed_table,
             name=DEFAULT_LOAD_TABLE_TOOL_NAME,
             description=(
-                "Load a parquet file into a table that was declared on a managed "
+                "Load a parquet file into a table that was declared on an instant "
                 "database, replacing whatever the table held. 'file' is either a path on "
                 "the local filesystem or an http:// or https:// URL, which is downloaded "
                 f"and uploaded for you{url_rule}. 'database_id' must be a database id returned by "
