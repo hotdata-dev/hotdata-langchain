@@ -14,7 +14,7 @@ def main() -> None:
     # lookup that produced it.
     databases = client.list_managed_databases()
     if not databases:
-        print("No managed databases in this workspace; create one to run a query.")
+        print("No instant databases in this workspace; create one to run a query.")
         client.close()
         return
 

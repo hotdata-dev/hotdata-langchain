@@ -29,11 +29,11 @@ uv run --group demo --env-file .env python demo/bm25_search_demo.py \
     --model '<provider>:<model>'
 ```
 
-The script is safe to re-run: it reuses the managed database, skips the load when the
+The script is safe to re-run: it reuses the instant database, skips the load when the
 table already has rows, and reuses an existing index.
 
 ```bash
-# bind an existing managed database by id instead of letting the demo find its own
+# bind an existing instant database by id instead of letting the demo find its own
 uv run --group demo --env-file .env python demo/bm25_search_demo.py \
     --database-id dbid...
 
@@ -44,7 +44,7 @@ uv run --group demo --env-file .env python demo/bm25_search_demo.py \
 # stop before the agent step even with a model set
 uv run --group demo --env-file .env python demo/bm25_search_demo.py --skip-agent
 
-# tear down the managed database it created
+# tear down the instant database it created
 uv run --group demo --env-file .env python demo/bm25_search_demo.py --cleanup
 
 # trace the run into a named LangSmith project
@@ -58,7 +58,7 @@ LANGSMITH_TRACING=true LANGSMITH_PROJECT=hotdata-langchain-bm25 \
 |---|---|---|
 | `HOTDATA_API_KEY` | steps 1–5 | everything except the agent run |
 | `HOTDATA_WORKSPACE` | optional | pins a workspace; first available otherwise |
-| `DEMO_DATABASE_ID` | optional | pins the managed database by id (same as `--database-id`) |
+| `DEMO_DATABASE_ID` | optional | pins the instant database by id (same as `--database-id`) |
 | your model provider's key | step 6 | skipped without it, or without `--model` |
 | `LANGSMITH_API_KEY` + `LANGSMITH_TRACING=true` | optional | traces the run to LangSmith |
 | `LANGSMITH_PROJECT` | optional | project the traces land in (default: `default`) |
@@ -74,7 +74,7 @@ and SQL are both inspectable after the fact.
 
 ### What each step does
 
-1. **Managed database** — binds the database given by `--database-id`, or else creates one
+1. **Instant database** — binds the database given by `--database-id`, or else creates one
    labelled `langchain_bm25_demo` with `public.listings` declared up front, so the load
    materialises into it directly. Everything downstream addresses the resolved record, so
    the label never selects the target; the create path prints the new id to pin. Finding a
@@ -183,7 +183,7 @@ Safe to re-run: documents carry explicit ids and the table is keyed on `id`, so 
 upserts the same ten rows rather than duplicating them.
 
 ```bash
-# bind an existing managed database by id
+# bind an existing instant database by id
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --database-id dbid...
 
 # retrieve more documents
@@ -201,7 +201,7 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --table docu
 # stop before the chain step even with a model set
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --skip-chain
 
-# tear down the managed database it created
+# tear down the instant database it created
 uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
 ```
 
@@ -212,11 +212,11 @@ uv run --group demo --env-file .env python demo/vectorstore_demo.py --cleanup
 | `HOTDATA_API_KEY` | every step | |
 | `OPENAI_EMBEDDING_KEY` | the write onwards | falls back to `OPENAI_API_KEY`; must be embeddings-scoped |
 | your model provider's key | the retrieval chain | skipped without it, or without `--model` |
-| `DEMO_DATABASE_ID` | optional | pins the managed database by id |
+| `DEMO_DATABASE_ID` | optional | pins the instant database by id |
 
 ### What each step does
 
-1. **Managed database** — binds `--database-id`, or creates one labelled
+1. **Instant database** — binds `--database-id`, or creates one labelled
    `langchain_vectorstore_demo`. It deliberately declares **no** tables: the store declares
    its own table keyed on `id`, and a table declared without that key would take writes as
    appends, so a re-run would duplicate every document instead of replacing it.

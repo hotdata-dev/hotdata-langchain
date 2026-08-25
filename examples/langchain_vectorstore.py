@@ -13,7 +13,7 @@ def main() -> None:
     # No tables declared here: the store declares its own, keyed on `id`, which is what
     # makes a repeat write replace a document instead of appending a copy.
     db = client.create_managed_database(description="demo_vectorstore", schema="public")
-    print(f"Created managed database {db.id}")
+    print(f"Created instant database {db.id}")
 
     store = hl.HotdataVectorStore(
         client,

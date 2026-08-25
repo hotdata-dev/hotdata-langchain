@@ -205,7 +205,7 @@ def sql_tool_description(
     else:
         catalog_rule = (
             "Read table_catalog from information_schema.tables rather than assuming a "
-            "catalog name: a managed database answers to 'default', an attached source "
+            "catalog name: an instant database answers to 'default', an attached source "
             "answers to its own name."
         )
     row_cap = (
@@ -256,7 +256,7 @@ def execute_sql_json(
     max_rows: int = 100,
     database: ManagedDatabase | None = None,
 ) -> str:
-    """Run SQL scoped to an already-resolved managed database and return JSON.
+    """Run SQL scoped to an already-resolved instant database and return JSON.
 
     ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
     with :func:`hotdata_langchain.databases.resolve_database_by_id`.
@@ -305,9 +305,9 @@ def make_hotdata_tools(
     allow_private_hosts: bool = False,
     catalog: str | None = None,
 ) -> list[StructuredTool]:
-    """Return LangChain tools for SQL and managed database workflows.
+    """Return LangChain tools for SQL and instant database workflows.
 
-    ``database_id`` scopes every query these tools run to one managed database. It is a
+    ``database_id`` scopes every query these tools run to one instant database. It is a
     database id, never a name: names are display labels and are not unique. The id is
     resolved once here and the resolved record is what each query carries, so a
     non-existent id fails at build time rather than on the agent's first query. Pass an
@@ -325,7 +325,7 @@ def make_hotdata_tools(
     databases themselves — listing, creating and loading. Turn it off for an agent that
     reads one fixed database, where they are surface the model can only misuse. The flag
     is not called ``read_only``: listing databases is itself a read, so the set it removes
-    is the managed-database workflow rather than everything that writes.
+    is the instant-database workflow rather than everything that writes.
 
     ``handle_errors`` returns each tool's failures as ``{"error": "<engine message>"}``
     instead of raising. An exception out of a tool aborts the whole agent run, so one
@@ -376,7 +376,7 @@ def make_hotdata_tools(
 
     ``catalog`` is the catalog name the SQL tool tells the model to address tables with.
     When it is omitted and the tools are scoped to a database, the catalogs are read from
-    that database's ``information_schema`` once, here — a managed database answers to
+    that database's ``information_schema`` once, here — an instant database answers to
     ``default`` and an attached source answers to its attachment alias, so there is no
     correct constant to fall back on. Pass it to skip that lookup.
     """
@@ -401,7 +401,7 @@ def make_hotdata_tools(
         return execute_sql_json(client, sql, max_rows=max_rows, database=database)
 
     def hotdata_list_managed_databases() -> str:
-        """List Hotdata-managed databases in the workspace."""
+        """List Hotdata instant databases in the workspace."""
         return list_managed_databases_json(client)
 
     def hotdata_create_managed_database(
@@ -409,7 +409,7 @@ def make_hotdata_tools(
         schema_name: str = DEFAULT_SCHEMA,
         tables: str = "",
     ) -> str:
-        """Create a managed database and optionally declare tables.
+        """Create an instant database and optionally declare tables.
 
         Args:
             name: display label for the database; it is not an identifier, and the
@@ -507,7 +507,7 @@ def make_hotdata_tools(
             func=hotdata_list_managed_databases,
             name=DEFAULT_LIST_DATABASES_TOOL_NAME,
             description=(
-                "List the managed databases in this workspace. Returns each database's "
+                "List the instant databases in this workspace. Returns each database's "
                 "'id' and its human-readable 'description'. Names are display labels and "
                 "are not unique — pass the 'id' to other tools, never the description. "
                 "An id cannot be guessed or built from a name; it only comes from here or "
@@ -518,7 +518,7 @@ def make_hotdata_tools(
             func=hotdata_create_managed_database,
             name=DEFAULT_CREATE_DATABASE_TOOL_NAME,
             description=(
-                "Create a managed database to hold tables you load. 'name' is a display "
+                "Create an instant database to hold tables you load. 'name' is a display "
                 "label only and is not an identifier; the response carries the 'id', which "
                 "is what every other tool needs — keep it. Declare the tables you intend "
                 "to load up front as a comma- or newline-separated list, so data loads "

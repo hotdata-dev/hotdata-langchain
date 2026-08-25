@@ -70,7 +70,7 @@ Constraints that matter enough to state in a tool description:
 **A database scope is required.** An unscoped query fails with `a database is required: set the
 X-Database-Id header or the database_id body field`.
 
-**There is no universal catalog name.** A managed database's tables answer to `default`; an
+**There is no universal catalog name.** An instant database's tables answer to `default`; an
 attached source's tables answer to the *attachment alias*, not to `default`. Verified
 2026-08-13 against `f1_db`: `default.public.results` fails with "table not found" while
 `f1.public.results` returns rows, and `information_schema.tables` lists catalog `f1` across all
@@ -365,7 +365,7 @@ discover which columns are searchable, and why the search tool pins its corpus.
 ## Databases and workspaces
 
 - **One client can query many databases.** `execute_sql(sql, database=...)` takes the scope per
-  call; the same client read from two different managed databases in one session.
+  call; the same client read from two different instant databases in one session.
 - **Cross-database references inside a single query fail** by default:
   `SELECT id FROM f1_db.public.drivers` from within another database's scope gives
   `table 'f1_db.public.drivers' not found`. `DatabasesApi` does expose

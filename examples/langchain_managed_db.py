@@ -1,4 +1,4 @@
-"""Managed database tools for LangChain agents."""
+"""Instant database tools for LangChain agents."""
 
 import json
 

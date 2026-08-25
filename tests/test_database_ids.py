@@ -1,4 +1,4 @@
-"""Managed databases are addressed by id, never by name.
+"""Instant databases are addressed by id, never by name.
 
 A Hotdata database name is a display label and is not unique, so a by-name lookup can
 resolve to the wrong database — and then every query, load and drop follows it there.
@@ -229,7 +229,7 @@ def test_load_description_tells_the_model_where_ids_come_from(mock_client: Magic
 
 # --- catalog lookup ----------------------------------------------------------------
 #
-# There is no catalog name that holds for both database kinds: a managed database's
+# There is no catalog name that holds for both database kinds: an instant database's
 # tables answer to `default`, an attached source's answer to the attachment's alias, and
 # the database record reports `default_catalog='default'` either way. So the SQL tool
 # description names the catalog only because this lookup found it, which makes the

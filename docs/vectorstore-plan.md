@@ -8,7 +8,7 @@ This plan is **self-contained**. It depends on no unmerged branch and no parked 
 ## Problem & positioning
 
 Hotdata is working with LangChain on deeper ecosystem integration, on top of the existing tool
-foundation in `make_hotdata_tools` (SQL, managed databases, BM25 search, schema discovery).
+foundation in `make_hotdata_tools` (SQL, instant databases, BM25 search, schema discovery).
 
 `VectorStore`/RAG is the next priority, chosen specifically because it converges with Rohan's
 own recent vector-search engineering:
@@ -150,7 +150,7 @@ Everything else has a default or raises `NotImplementedError` until overridden.
 3. **Every read** — `client.execute_sql(sql, database=self._db)`, passing the resolved record.
    Never a string: `execute_sql(database="<id>")` re-resolves per call, and a name would reach
    the framework's by-name fallback (see `docs/engine-contract.md`).
-4. **Table reference in SQL** — `"default"."<schema>"."<table>"`; inside a managed database the
+4. **Table reference in SQL** — `"default"."<schema>"."<table>"`; inside an instant database the
    built-in catalog is always `default`.
 
 ### SQL-path decision
