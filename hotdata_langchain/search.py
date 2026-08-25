@@ -109,7 +109,7 @@ def bm25_search_sql(
 ) -> str:
     """Build the SQL for a ranked BM25 top-k search over an indexed text column.
 
-    ``table`` is a fully qualified ``catalog.schema.table`` reference. Inside a managed
+    ``table`` is a fully qualified ``catalog.schema.table`` reference. Inside an instant
     database the built-in catalog is always ``default``, so a managed table reads as
     ``default.public.listings`` when the query is scoped to that database.
 

@@ -7,7 +7,13 @@ encodes a real constraint is pinned rather than left free.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from hotdata_framework import ManagedDatabase
+from langchain_core.tools import StructuredTool
 
 from hotdata_langchain.indexes import SEMANTIC, SearchIndex
 from hotdata_langchain.search import SearchRoute
@@ -312,3 +318,120 @@ def test_sql_description_keeps_bm25_wording_without_a_route() -> None:
     )
     assert f"bm25_search('{TABLE}', '{COLUMN}'" in description
     assert "vector_search" not in description
+
+
+def _tool_builds() -> list[tuple[str, dict[str, object]]]:
+    """The configurations whose descriptions differ, not just the default one.
+
+    The search variants matter most: the tool name woven into the SQL description is
+    computed from the resolved route, so it is the one cross-reference that is not a
+    literal and the one a rename is most likely to leave behind.
+    """
+    return [
+        ("default", {"management_tools": True}),
+        ("no describe tool", {"management_tools": True, "describe_tables": False}),
+        ("text search", {"search_table": TABLE, "search_column": COLUMN}),
+        (
+            "semantic search",
+            {"search_table": TABLE, "search_column": COLUMN, "search_strategy": "semantic"},
+        ),
+    ]
+
+
+def _model_facing(tool: object) -> str:
+    """Everything of a tool that reaches the model: its description and its arg schema."""
+    description = getattr(tool, "description", "") or ""
+    args = getattr(tool, "args", None) or {}
+    return description + " " + " ".join(str(a.get("description", "")) for a in args.values())
+
+
+def _built(name: str, kwargs: dict[str, object]) -> list[StructuredTool]:
+    """Build one tool set, resolving a semantic route through introspection.
+
+    `make_hotdata_tools` takes no route: it reads one from the control plane, which is the
+    behaviour under test — the tool name woven into the SQL description follows whatever
+    that resolves to. So the semantic build patches the index listing rather than handing
+    the answer in.
+    """
+    client = MagicMock()
+    if name != "semantic search":
+        return make_hotdata_tools(client, **kwargs)  # type: ignore[arg-type]
+
+    database = ManagedDatabase(
+        id="dbidsf000000000000000000000001",
+        description="sf_airbnb",
+        default_connection_id="connsf00000000000000000000001",
+    )
+    listed = SimpleNamespace(
+        indexes=[
+            SimpleNamespace(
+                index_name="listings_description_vector",
+                index_type="vector",
+                columns=["description_embedding"],
+                metric="cosine",
+                status="ready",
+                source_column=COLUMN,
+            )
+        ]
+    )
+    with patch("hotdata_langchain.indexes.IndexesApi") as indexes:
+        indexes.return_value.list_indexes.return_value = listed
+        return make_hotdata_tools(client, database_id=database, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("label,kwargs", _tool_builds())
+def test_the_tools_use_one_name_for_a_database(label: str, kwargs: dict[str, object]) -> None:
+    """Every description reaches the model in one prompt, so two names for one thing is a
+    contradiction it has to resolve. The rename to 'instant database' missed a string split
+    across two source lines, which left the load tool describing what the other two called
+    something else. Case-insensitive, and over the arg schema too: a sentence-initial
+    'Managed database' is the same defect, and an argument description is read just as the
+    tool description is."""
+    said = {
+        # Not lowercased: the pattern is a literal, so folding the case would throw away
+        # the one thing the failure has to show — how it was actually written.
+        tool.name: sorted(set(re.findall(r"managed database", _model_facing(tool), re.I)))
+        for tool in _built(label, kwargs)
+    }
+    mixed = {name: terms for name, terms in said.items() if terms}
+    assert not mixed, (
+        f"[{label}] these call a database 'managed' while others say 'instant': {mixed}"
+    )
+
+
+@pytest.mark.parametrize("label,kwargs", _tool_builds())
+def test_no_description_points_at_a_tool_that_is_not_registered(
+    label: str, kwargs: dict[str, object]
+) -> None:
+    """A description naming another tool is an instruction to call it, so a name that has
+    drifted sends the model somewhere that does not exist. These cross-references are what
+    make renaming a tool breaking rather than cosmetic, and a rename is coming.
+
+    Parametrised because the reference woven into the SQL description is *computed* from the
+    resolved search route rather than written as a literal, so the default build — which
+    registers no search tool — never exercises the case most likely to break."""
+    tools = _built(label, kwargs)
+    registered = {tool.name for tool in tools}
+    dangling = {
+        (tool.name, ref)
+        for tool in tools
+        for ref in re.findall(r"hotdata_[a-z_]+", _model_facing(tool))
+        if ref not in registered
+    }
+    assert not dangling, f"[{label}] descriptions name unregistered tools: {sorted(dangling)}"
+
+
+@pytest.mark.parametrize("label,kwargs", _tool_builds())
+def test_the_model_is_never_shown_the_phrase_managed_table(
+    label: str, kwargs: dict[str, object]
+) -> None:
+    """`managed table` survives in the Python API and in prose written for people, and a
+    table inside an instant database arguably wants a new name too — but that is a product
+    decision. Until it is made, the term stays out of what a model reads, so the prompt
+    carries one vocabulary rather than two."""
+    leaked = {
+        tool.name
+        for tool in _built(label, kwargs)
+        if "managed table" in _model_facing(tool).lower()
+    }
+    assert not leaked, f"[{label}] these show the model 'managed table': {sorted(leaked)}"
