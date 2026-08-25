@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-25
+
 ### Fixed
 
 - `hotdata_describe_tables` accepts a `catalog.schema.table` reference, which it used to
