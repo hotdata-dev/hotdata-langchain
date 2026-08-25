@@ -31,14 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The tools describe a database the way the product now names it. Renaming "managed
-  database" to "instant database" (#83) missed one string, split across two source lines, so
-  `hotdata_load_managed_table` described a table as declared on a "managed database" while
-  the listing and creation tools called the same thing an "instant database". All three
-  descriptions reach a model in one prompt, and two names for one thing is a contradiction it
-  has to resolve. The same rename left "managed database" in three docstrings, which reach a
-  maintainer rather than a model; those are corrected too. Tool names and the Python API are
-  unchanged.
+- **The tools call a database an "instant database", not a "managed database"**, matching
+  what the product now calls it. This is the text a model plans against, so anyone holding a
+  snapshot of a tool description — a prompt fixture, an eval keyed on wording — will see it
+  change. Tool names and the Python API are deliberately unchanged: `hotdata_execute_sql` and
+  the rest keep their names, as do `ManagedDatabase`, `list_managed_databases()` and
+  `create_managed_database()`. Renaming those is breaking and is tracked separately.
+
+  The rename missed one string, because the phrase spanned two source lines and so existed on
+  neither: `hotdata_load_managed_table` went on describing a table as declared on a "managed
+  database" while the listing and creation tools called the same thing an "instant database".
+  All three reach a model in one prompt, and two names for one thing is a contradiction it has
+  to resolve. Three docstrings, which reach a maintainer rather than a model, were left behind
+  the same way. Tests now fail if any description calls a database "managed" while another
+  calls it "instant", if a description names a tool that is not registered, or if "managed
+  table" reaches a model.
 - On a fused search route, the closing advice about aggregating in SQL states the composed
   form's cohort as advice rather than as a comparison against the tool. It read "Ranking there
   goes by the words alone, so it is narrower than this tool", which put a reason to decline
