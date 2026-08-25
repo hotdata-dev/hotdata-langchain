@@ -431,7 +431,7 @@ def test_a_column_that_cannot_be_counted_does_not_take_the_stats_down() -> None:
 def test_describe_description_names_the_three_part_form_without_inventing_a_catalog() -> None:
     """Both descriptions reach the model in one prompt, and the SQL one tells it to address
     tables with all three parts — so this has to name that form. With no catalog resolved
-    there is no correct constant to use for it: a managed database answers to 'default' and
+    there is no correct constant to use for it: an instant database answers to 'default' and
     an attached source to its alias."""
     described = default_describe_description()
     assert "catalog.schema.table" in described

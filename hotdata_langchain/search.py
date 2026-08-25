@@ -1114,7 +1114,7 @@ def make_hotdata_search_tool(
     outright when the index is missing. The agent supplies only ``query`` and an
     optional ``k``.
 
-    ``database_id`` scopes the search to one managed database, by id and never by name;
+    ``database_id`` scopes the search to one instant database, by id and never by name;
     it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip the
     lookup.
 

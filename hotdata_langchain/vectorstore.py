@@ -84,7 +84,7 @@ def _matches_type(value: Any, column_type: str) -> bool:
 
 
 class HotdataVectorStore(VectorStore):
-    """Vector store over one managed table in a Hotdata managed database.
+    """Vector store over one managed table in a Hotdata instant database.
 
     Rows are stored as ``id`` / ``content`` / ``metadata_json`` / ``embedding``, keyed on
     ``id`` so writes upsert rather than duplicate. Searches run as a single SQL query
@@ -181,7 +181,7 @@ class HotdataVectorStore(VectorStore):
 
     @property
     def database(self) -> ManagedDatabase:
-        """The resolved managed database every query and load is addressed to."""
+        """The resolved instant database every query and load is addressed to."""
         return self._database
 
     @property

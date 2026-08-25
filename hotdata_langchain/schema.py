@@ -306,7 +306,7 @@ def default_describe_description(
 
     ``catalogs`` names the catalogs the tools are scoped to, and the worked example uses
     one only when there is exactly one to use. There is no correct constant to fall back
-    on: a managed database answers to ``default`` and an attached source answers to its
+    on: an instant database answers to ``default`` and an attached source answers to its
     attachment alias, so a hardcoded ``default`` would put this description at odds with
     the SQL tool's — which resolves the catalog per database — in the one prompt they both
     reach. It would also send a model following the example to a reference the catalog
@@ -345,7 +345,7 @@ def make_hotdata_describe_tables_tool(
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
 
-    ``database_id`` scopes the introspection to one managed database, by id and never by
+    ``database_id`` scopes the introspection to one instant database, by id and never by
     name; it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip
     the lookup.
 

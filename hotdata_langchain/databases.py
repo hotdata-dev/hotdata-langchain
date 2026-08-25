@@ -1,4 +1,4 @@
-"""Managed database helpers for LangChain agents."""
+"""Instant database helpers for LangChain agents."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def resolve_database_by_id(
     client: HotdataClient,
     database_id: str | ManagedDatabase,
 ) -> ManagedDatabase:
-    """Fetch a managed database record by id (``GET /databases/{id}``).
+    """Fetch an instant database record by id (``GET /databases/{id}``).
 
     Addresses the database by id only. A Hotdata database name is a display label and is
     not unique, so there is deliberately no by-name fallback: a name that collides with
@@ -61,7 +61,7 @@ def resolve_database_by_id(
     except ApiException as e:
         if e.status == 404:
             raise KeyError(
-                f"no managed database with id {database_id!r} in this workspace. "
+                f"no instant database with id {database_id!r} in this workspace. "
                 "Ids are listed by hotdata_list_managed_databases; a database name is "
                 "not accepted here, because names are not unique."
             ) from e
@@ -128,7 +128,7 @@ def create_managed_database(
     schema: str = DEFAULT_SCHEMA,
     tables: list[str] | None = None,
 ) -> ManagedDatabase:
-    """Create a managed database, labelled ``name``.
+    """Create an instant database, labelled ``name``.
 
     ``name`` is a display label only; address the result by its ``id`` from here on.
     """

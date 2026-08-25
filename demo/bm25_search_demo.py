@@ -37,7 +37,7 @@ TABLE = "listings"
 SEARCH_COLUMN = "description"
 INDEX_NAME = "listings_description_bm25"
 
-# The managed database is addressable as the `default` catalog inside its own scope,
+# The instant database is addressable as the `default` catalog inside its own scope,
 # so the search tool's table reference is catalog-qualified against that.
 TABLE_REF = f"default.{SCHEMA}.{TABLE}"
 
@@ -104,19 +104,19 @@ def find_database_by_label(client: hl.HotdataClient, label: str) -> Any | None:
 
 
 def ensure_database(client: hl.HotdataClient, database_id: str | None) -> Any:
-    """Return the demo's managed database record, bound by id or created."""
+    """Return the demo's instant database record, bound by id or created."""
     if database_id:
         db = hl.resolve_database_by_id(client, database_id)
-        print(f"Bound managed database {db.id} by id (label={db.description!r})")
+        print(f"Bound instant database {db.id} by id (label={db.description!r})")
         return db
 
     existing = find_database_by_label(client, DATABASE_LABEL)
     if existing is not None:
-        print(f"Reusing managed database {existing.id} (label={DATABASE_LABEL!r})")
+        print(f"Reusing instant database {existing.id} (label={DATABASE_LABEL!r})")
         return existing
 
     db = client.create_managed_database(description=DATABASE_LABEL, schema=SCHEMA, tables=[TABLE])
-    print(f"Created managed database {db.id} (label={DATABASE_LABEL!r}) with {SCHEMA}.{TABLE}")
+    print(f"Created instant database {db.id} (label={DATABASE_LABEL!r}) with {SCHEMA}.{TABLE}")
     print(f"  Pin it for later runs with --database-id {db.id} (or DEMO_DATABASE_ID)")
     return db
 
@@ -228,13 +228,13 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=os.environ.get("DEMO_DATABASE_ID"),
-        help="bind an existing managed database by id (or set DEMO_DATABASE_ID); "
+        help="bind an existing instant database by id (or set DEMO_DATABASE_ID); "
         "without one the demo reuses or creates its own and prints the id to pin",
     )
     parser.add_argument("--skip-agent", action="store_true", help="stop after direct tool use")
     parser.add_argument("--reload", action="store_true", help="reload the parquet even if loaded")
     parser.add_argument(
-        "--cleanup", action="store_true", help="delete the demo managed database and exit"
+        "--cleanup", action="store_true", help="delete the demo instant database and exit"
     )
     args = parser.parse_args()
 
@@ -248,15 +248,15 @@ def main() -> None:
             else find_database_by_label(client, DATABASE_LABEL)
         )
         if target is None:
-            print(f"No managed database labelled {DATABASE_LABEL!r} to delete")
+            print(f"No instant database labelled {DATABASE_LABEL!r} to delete")
         else:
             client.delete_managed_database(target)
-            print(f"Deleted managed database {target.id} (label={target.description!r})")
+            print(f"Deleted instant database {target.id} (label={target.description!r})")
         client.close()
         return
 
     try:
-        step("1. Managed database")
+        step("1. Instant database")
         db = ensure_database(client, args.database_id)
 
         step("2. Listings data")

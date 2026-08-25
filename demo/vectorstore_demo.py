@@ -1,6 +1,6 @@
 """End-to-end demo of HotdataVectorStore, from empty workspace to a RAG chain.
 
-Stands up a managed database, writes embedded documents into it, then answers a question
+Stands up an instant database, writes embedded documents into it, then answers a question
 with a stock LangChain retrieval chain — `as_retriever()` into a prompt into a model, with
 no Hotdata-specific code in the chain itself. That is the point: implementing LangChain's
 `VectorStore` interface is what makes the rest of LangChain work against Hotdata unchanged.
@@ -152,21 +152,21 @@ def find_database_by_label(client: hl.HotdataClient, label: str) -> Any | None:
 
 
 def ensure_database(client: hl.HotdataClient, database_id: str | None) -> Any:
-    """Return the demo's managed database record, bound by id or created."""
+    """Return the demo's instant database record, bound by id or created."""
     if database_id:
         db = hl.resolve_database_by_id(client, database_id)
-        print(f"Bound managed database {db.id} by id (label={db.description!r})")
+        print(f"Bound instant database {db.id} by id (label={db.description!r})")
         return db
 
     existing = find_database_by_label(client, DATABASE_LABEL)
     if existing is not None:
-        print(f"Reusing managed database {existing.id} (label={DATABASE_LABEL!r})")
+        print(f"Reusing instant database {existing.id} (label={DATABASE_LABEL!r})")
         return existing
 
     # No `tables=` here on purpose: the store declares its own table keyed on `id`, and a
     # table declared without that key would take writes as appends.
     db = client.create_managed_database(description=DATABASE_LABEL, schema=SCHEMA)
-    print(f"Created managed database {db.id} (label={DATABASE_LABEL!r})")
+    print(f"Created instant database {db.id} (label={DATABASE_LABEL!r})")
     print(f"  Pin it for later runs with --database-id {db.id} (or DEMO_DATABASE_ID)")
     return db
 
@@ -272,7 +272,7 @@ def main() -> None:
     parser.add_argument(
         "--database-id",
         default=os.environ.get("DEMO_DATABASE_ID"),
-        help="bind an existing managed database by id (or set DEMO_DATABASE_ID); "
+        help="bind an existing instant database by id (or set DEMO_DATABASE_ID); "
         "without one the demo reuses or creates its own and prints the id to pin",
     )
     parser.add_argument(
@@ -283,7 +283,7 @@ def main() -> None:
     )
     parser.add_argument("--skip-chain", action="store_true", help="stop after direct searches")
     parser.add_argument(
-        "--cleanup", action="store_true", help="delete the demo managed database and exit"
+        "--cleanup", action="store_true", help="delete the demo instant database and exit"
     )
     args = parser.parse_args()
 
@@ -297,15 +297,15 @@ def main() -> None:
             else find_database_by_label(client, DATABASE_LABEL)
         )
         if target is None:
-            print(f"No managed database labelled {DATABASE_LABEL!r} to delete")
+            print(f"No instant database labelled {DATABASE_LABEL!r} to delete")
         else:
             client.delete_managed_database(target)
-            print(f"Deleted managed database {target.id} (label={target.description!r})")
+            print(f"Deleted instant database {target.id} (label={target.description!r})")
         client.close()
         return
 
     try:
-        step("Managed database")
+        step("Instant database")
         db = ensure_database(client, args.database_id)
 
         step("Vector store")

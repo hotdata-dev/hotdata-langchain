@@ -1,6 +1,6 @@
 # hotdata-langchain
 
-Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, search indexed columns by text relevance or by meaning, and work with managed databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
+Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.dev) — tools that let an agent run SQL against your workspace connections, search indexed columns by text relevance or by meaning, and work with instant databases, plus a `VectorStore` implementation so Hotdata can back any LangChain retriever or chain.
 
 ## Install
 
@@ -33,7 +33,7 @@ result = agent.invoke(
 print(result["messages"][-1].content)
 ```
 
-Queries run against a database scope, so pass `database_id=` (a managed database id).
+Queries run against a database scope, so pass `database_id=` (an instant database id).
 `hl.from_env().list_managed_databases()` shows what is available in the workspace, with the
 id of each.
 
@@ -44,8 +44,8 @@ id of each.
 | Tool | What it does |
 |------|-------------|
 | `hotdata_execute_sql` | Run a SQL query and return rows as JSON |
-| `hotdata_list_managed_databases` | List available managed databases, with the id of each |
-| `hotdata_create_managed_database` | Create a new managed database and return its id |
+| `hotdata_list_managed_databases` | List available instant databases, with the id of each |
+| `hotdata_create_managed_database` | Create a new instant database and return its id |
 | `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
 | `hotdata_describe_tables` | List tables, or one table's columns, types and how many rows hold a value |
 | `hotdata_search_text` | Search an indexed column by text relevance, fused with meaning where the table supports it (opt-in — see below) |
@@ -59,7 +59,7 @@ an application selecting a subset does not have to hardcode strings.
 
 ## Choosing which tools an agent gets
 
-An agent that reads one fixed database cannot use the three managed-database tools, and giving
+An agent that reads one fixed database cannot use the three instant-database tools, and giving
 it tools it can only misuse costs context on every turn. Two flags decide the set:
 
 ```python
@@ -69,7 +69,7 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=Fal
 ```
 
 `management_tools=False` drops listing, creating and loading. It is not called `read_only`:
-listing databases is itself a read, so the set it removes is the managed-database workflow
+listing databases is itself a read, so the set it removes is the instant-database workflow
 rather than everything that writes.
 
 ## Letting the model recover from a failed call
@@ -117,7 +117,7 @@ narrowing the lookup, in whatever case the reference is written. The full form i
 because the SQL tool's description tells the model to address tables with all three parts, and
 both descriptions reach it in one prompt — so a model that follows one must not be corrected by
 the other. The worked example in the description names a catalog only where the database
-exposes exactly one, since `default` is right for a managed database and wrong for an attached
+exposes exactly one, since `default` is right for an instant database and wrong for an attached
 source.
 
 ```python
@@ -302,7 +302,7 @@ is expressible in SQL, so the composed form still holds a whole cohort in one qu
 ranks on wording alone; both descriptions say that too, rather than one of them claiming
 SQL does what the tool does.
 
-A managed database's tables read as `default.<schema>.<table>`. An **attached** source's do
+An instant database's tables read as `default.<schema>.<table>`. An **attached** source's do
 not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not
 found there. Nothing on the database record distinguishes the two, so there is no constant
 the tools can assume.
@@ -340,7 +340,7 @@ tools = [
 ```
 
 Provisioning the index itself is not yet part of this package; create it through the Hotdata
-API or CLI. `demo/` has a script that does the whole flow — managed database, data load, BM25
+API or CLI. `demo/` has a script that does the whole flow — instant database, data load, BM25
 index, then an agent that picks between search and SQL.
 
 ### Both at once, under one tool
@@ -561,9 +561,9 @@ filtering *after* a top-k selection can only shrink the result, never re-fill it
 table has, so opening an existing store with different promoted columns fails on the first
 write with `upload is missing column '<name>'`.
 
-## Scoping queries to a managed database
+## Scoping queries to an instant database
 
-`database_id=` scopes all SQL the agent runs to one managed database. The API requires a
+`database_id=` scopes all SQL the agent runs to one instant database. The API requires a
 database scope, so queries fail with `a database is required` without it:
 
 ```python

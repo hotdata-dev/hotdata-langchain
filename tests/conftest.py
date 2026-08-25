@@ -68,7 +68,7 @@ def serve(monkeypatch: pytest.MonkeyPatch, public_dns: None) -> Callable[..., Fa
 
 @pytest.fixture
 def managed_db() -> ManagedDatabase:
-    """A resolved managed database, as ``resolve_database_by_id`` returns one.
+    """A resolved instant database, as ``resolve_database_by_id`` returns one.
 
     Query scopes are resolved records rather than id strings, so tests pass this where
     an id would previously have been threaded through.
