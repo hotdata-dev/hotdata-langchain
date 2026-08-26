@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.schema import (
@@ -196,14 +197,26 @@ def test_describe_reports_an_unknown_table_rather_than_empty_success() -> None:
 def test_describe_scopes_queries_to_the_database(managed_db: ManagedDatabase) -> None:
     client = MagicMock()
     client.execute_sql.return_value = OVERVIEW
-    describe_tables_json(client, database=managed_db)
+    describe_tables_json(client, database_id=managed_db)
     assert client.execute_sql.call_args.kwargs == {"database": managed_db}
 
 
-def test_describe_refuses_an_unresolved_database_scope() -> None:
-    """A bare string would reach the framework's by-name fallback."""
-    with pytest.raises(TypeError, match="resolve_database_by_id"):
-        describe_tables_json(MagicMock(), database="sf_airbnb")  # type: ignore[arg-type]
+def test_describe_resolves_an_id_and_never_matches_a_name(
+    managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    """A string is an id here; the framework's by-name fallback stays out of reach."""
+    client = MagicMock()
+    client.execute_sql.return_value = OVERVIEW
+    describe_tables_json(client, database_id=managed_db.id)
+    databases_api.return_value.get_database.assert_called_once_with(managed_db.id)
+    client.resolve_managed_database.assert_not_called()
+    assert client.execute_sql.call_args.kwargs == {"database": managed_db}
+
+    databases_api.return_value.get_database.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+    with pytest.raises(KeyError, match="not accepted here"):
+        describe_tables_json(client, database_id="sf_airbnb")
 
 
 # --- Tool surface -----------------------------------------------------------------
@@ -340,7 +353,9 @@ def test_declared_but_unloaded_table_is_not_reported_as_missing(
     client.list_managed_tables.return_value = [
         SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
     ]
-    payload = json.loads(describe_tables_json(client, table="public.customer", database=managed_db))
+    payload = json.loads(
+        describe_tables_json(client, table="public.customer", database_id=managed_db)
+    )
     assert client.list_managed_tables.call_args.kwargs == {"schema": "public"}
     assert "error" not in payload
     assert payload["row_count"] == 0
@@ -360,7 +375,7 @@ def test_a_declared_but_unloaded_table_is_still_found_through_its_catalog(
         SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
     ]
     payload = json.loads(
-        describe_tables_json(client, table="default.public.customer", database=managed_db)
+        describe_tables_json(client, table="default.public.customer", database_id=managed_db)
     )
     assert "no data yet" in payload["note"]
 
@@ -380,7 +395,7 @@ def test_a_table_under_a_wrong_catalog_is_missing_rather_than_unloaded(
         SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
     ]
     payload = json.loads(
-        describe_tables_json(client, table="wrong.public.customer", database=managed_db)
+        describe_tables_json(client, table="wrong.public.customer", database_id=managed_db)
     )
     assert "note" not in payload
     assert "no table named" in payload["error"]
@@ -392,7 +407,7 @@ def test_a_genuinely_missing_table_still_reports_an_error(managed_db: ManagedDat
         ["table_schema", "table_name", "column_name", "data_type"], []
     )
     client.list_managed_tables.return_value = []
-    payload = json.loads(describe_tables_json(client, table="nope", database=managed_db))
+    payload = json.loads(describe_tables_json(client, table="nope", database_id=managed_db))
     assert "no table named" in payload["error"]
 
 
@@ -507,6 +522,6 @@ def test_an_uppercased_managed_catalog_still_finds_an_unloaded_table(
         SimpleNamespace(table="customer", schema="public", full_name="db.public.customer")
     ]
     payload = json.loads(
-        describe_tables_json(client, table="DEFAULT.public.customer", database=managed_db)
+        describe_tables_json(client, table="DEFAULT.public.customer", database_id=managed_db)
     )
     assert "no data yet" in payload["note"]

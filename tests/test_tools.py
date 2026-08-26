@@ -4,6 +4,7 @@ import json
 import socket
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 from urllib.request import Request
 
 import pytest
@@ -70,6 +71,20 @@ def test_create_managed_database_delegates(mock_client):
         tables=["orders"],
     )
     assert db.description == "sales"
+
+
+def test_the_create_tool_reports_the_database_under_name(mock_client: MagicMock) -> None:
+    """The create tool's payload shares the list tool's key, so the rename has to hold here too.
+
+    `name` is also this tool's argument name, so the quoted-key guard in test_descriptions
+    cannot tell the two apart — the payload is pinned directly instead.
+    """
+    mock_client.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    tools = {t.name: t for t in make_hotdata_tools(mock_client)}
+    payload = json.loads(tools["hotdata_create_managed_database"].invoke({"name": "sales"}))
+    assert payload == {"id": "c1", "name": "sales"}
 
 
 def test_load_managed_table_delegates(mock_client, managed_db, parquet_file):

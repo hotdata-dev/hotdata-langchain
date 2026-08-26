@@ -594,8 +594,10 @@ db = hl.create_managed_database(client, name="sales", schema="public", tables=["
 tools = hl.make_hotdata_tools(client, database_id=db)
 ```
 
-`hl.execute_sql_json` takes the same `database_id=`, so running SQL outside the tool layer
-scopes the same way and accepts the same id or record:
+Every helper that runs a query takes the same `database_id=` — `hl.execute_sql_json`,
+`hl.bm25_search_json`, `hl.semantic_search_json`, `hl.hybrid_search_json` and
+`hl.describe_tables_json` — so working outside the tool layer scopes the same way and accepts
+the same id or record. Passing the record skips the lookup an id costs on each call:
 
 ```python
 print(hl.execute_sql_json(client, "SELECT * FROM orders LIMIT 5", database_id="dbid..."))

@@ -260,7 +260,9 @@ def execute_sql_json(
 
     ``database_id`` takes a database id or an already-resolved ``ManagedDatabase``, and
     is the same parameter :func:`make_hotdata_tools` takes. A name is not accepted: names
-    are display labels and are not unique, so resolution is by id only.
+    are display labels and are not unique, so resolution is by id only. An id costs a
+    lookup per call, which passing the resolved record skips — `make_hotdata_tools`
+    resolves once at construction for exactly that reason.
 
     ``metadata.client_warning`` carries anything this package noticed about a call that
     succeeded without doing what it said: rows capped at ``max_rows``, or a date/time
