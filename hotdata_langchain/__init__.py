@@ -76,6 +76,7 @@ from hotdata_langchain.tools import (
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
+    suffixed_tool_name,
 )
 from hotdata_langchain.vectorstore import HotdataVectorStore
 
@@ -138,6 +139,7 @@ __all__ = [
     "result_rows_for_llm",
     "search_nouns_by_column",
     "semantic_search_json",
+    "suffixed_tool_name",
     "vector_distance_sql",
     "vector_search_sql",
     "with_error_feedback",

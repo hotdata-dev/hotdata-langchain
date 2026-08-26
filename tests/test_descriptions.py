@@ -336,6 +336,33 @@ def _tool_builds() -> list[tuple[str, dict[str, object]]]:
             "semantic search",
             {"search_table": TABLE, "search_column": COLUMN, "search_strategy": "semantic"},
         ),
+        (
+            "suffixed names",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "sales",
+            },
+        ),
+        (
+            "suffix with a digit",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "f1",
+            },
+        ),
+        (
+            "suffixed semantic search",
+            {
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "search_strategy": "semantic",
+                "tool_name_suffix": "sales",
+            },
+        ),
     ]
 
 
@@ -355,7 +382,7 @@ def _built(name: str, kwargs: dict[str, object]) -> list[StructuredTool]:
     the answer in.
     """
     client = MagicMock()
-    if name != "semantic search":
+    if "semantic" not in name:
         return make_hotdata_tools(client, **kwargs)  # type: ignore[arg-type]
 
     database = ManagedDatabase(
@@ -416,7 +443,10 @@ def test_no_description_points_at_a_tool_that_is_not_registered(
     dangling = {
         (tool.name, ref)
         for tool in tools
-        for ref in re.findall(r"hotdata_[a-z_]+", _model_facing(tool))
+        # Digits and hyphens are legal in a tool name, and a name-suffixed set puts them
+        # there: `[a-z_]+` truncated `hotdata_describe_tables_f1` to `..._f` and reported
+        # a correct reference as dangling.
+        for ref in re.findall(r"hotdata_[a-z0-9_-]+", _model_facing(tool))
         if ref not in registered
     }
     assert not dangling, f"[{label}] descriptions name unregistered tools: {sorted(dangling)}"

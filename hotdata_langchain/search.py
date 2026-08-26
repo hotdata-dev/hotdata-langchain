@@ -19,7 +19,11 @@ from hotdata_langchain._sql import (
     validate_identifier,
     vector_literal,
 )
-from hotdata_langchain.databases import query_scope, resolve_database_by_id
+from hotdata_langchain.databases import (
+    query_scope,
+    resolve_database_by_id,
+    scoped_description,
+)
 from hotdata_langchain.indexes import (
     SEMANTIC,
     TEXT,
@@ -1078,6 +1082,7 @@ def make_hotdata_search_tool(
     embedding: Embeddings | None = None,
     semantic_column: str | None = None,
     route: SearchRoute | None = None,
+    label: str | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that searches one indexed column, by text or by meaning.
 
@@ -1118,6 +1123,9 @@ def make_hotdata_search_tool(
     answer. ``hotdata_describe_tables`` reports which columns are searchable, but this tool
     does not yet take the table and column from the agent. It supplies only ``query`` and
     an optional ``k``.
+
+    ``label`` names the database in the description, so two tool sets over different
+    databases are distinguishable in one prompt.
 
     ``database_id`` scopes the search to one instant database, by id and never by name;
     it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip the
@@ -1246,9 +1254,12 @@ def make_hotdata_search_tool(
         return StructuredTool.from_function(
             func=hotdata_search_text,
             name=name or DEFAULT_SEARCH_TOOL_NAME,
-            description=description
-            or default_search_description(
-                table, column, columns=projection, max_k=max_rows, hybrid=fusion is not None
+            description=scoped_description(
+                description
+                or default_search_description(
+                    table, column, columns=projection, max_k=max_rows, hybrid=fusion is not None
+                ),
+                label,
             ),
             parse_docstring=True,
         )
@@ -1294,9 +1305,12 @@ def make_hotdata_search_tool(
     return StructuredTool.from_function(
         func=hotdata_search_semantic,
         name=name or DEFAULT_SEMANTIC_TOOL_NAME,
-        description=description
-        or default_semantic_description(
-            table, column, columns=projection, max_k=max_rows, composable=route.composable
+        description=scoped_description(
+            description
+            or default_semantic_description(
+                table, column, columns=projection, max_k=max_rows, composable=route.composable
+            ),
+            label,
         ),
         parse_docstring=True,
     )

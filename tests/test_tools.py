@@ -473,3 +473,108 @@ def test_the_format_hint_survives_the_error_feedback_wrapper(mock_client):
         tools[DEFAULT_SQL_TOOL_NAME].invoke({"sql": "SELECT to_char(d, 'YYYY-MM-DD') FROM t"})
     )
     assert "Write '%Y-%m-%d' instead." in payload["error"]
+
+
+# --- Telling two tool sets apart --------------------------------------------------
+#
+# One client can query many databases, so registering two tool sets in one agent is a
+# supported shape. Without a suffix both sets register `hotdata_execute_sql`, and the
+# model is handed two tools it cannot address or choose between.
+
+
+SALES = ManagedDatabase(id="dbid1", description="sales", default_connection_id="conn1")
+SUPPORT = ManagedDatabase(id="dbid2", description="support", default_connection_id="conn2")
+
+
+def _names(client: MagicMock, **kwargs: object) -> list[str]:
+    return [t.name for t in make_hotdata_tools(client, **kwargs)]  # type: ignore[arg-type]
+
+
+def test_two_tool_sets_collide_without_a_suffix(mock_client: MagicMock) -> None:
+    """The defect this exists to fix, pinned so the fix cannot be mistaken for unnecessary."""
+    both = _names(mock_client, database_id=SALES) + _names(mock_client, database_id=SUPPORT)
+    assert len(set(both)) < len(both)
+
+
+def test_a_suffix_makes_every_name_in_the_set_distinct(mock_client: MagicMock) -> None:
+    both = _names(mock_client, database_id=SALES, tool_name_suffix="sales") + _names(
+        mock_client, database_id=SUPPORT, tool_name_suffix="support"
+    )
+    assert len(set(both)) == len(both)
+    assert "hotdata_execute_sql_sales" in both
+    assert "hotdata_execute_sql_support" in both
+
+
+def test_an_explicit_search_tool_name_is_used_as_given(mock_client: MagicMock) -> None:
+    """Naming that tool is already the caller's decision, so the suffix does not second-guess it."""
+    names = _names(
+        mock_client,
+        database_id=SALES,
+        search_table="default.public.listings",
+        search_column="description",
+        search_tool_name="search_sales",
+        tool_name_suffix="sales",
+    )
+    assert "search_sales" in names
+    assert "hotdata_search_text_sales" not in names
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        pytest.param("has a space", id="space"),
+        pytest.param("dots.not.allowed", id="dot"),
+        pytest.param("x" * 60, id="too-long"),
+    ],
+)
+def test_a_suffix_that_no_provider_would_accept_fails_at_build_time(
+    mock_client: MagicMock, suffix: str
+) -> None:
+    """Rejected here rather than at the provider, which sees it only on the first call."""
+    with pytest.raises(ValueError):
+        make_hotdata_tools(mock_client, database_id=SALES, tool_name_suffix=suffix)
+
+
+def test_the_database_scoped_tools_name_their_database(mock_client: MagicMock) -> None:
+    tools = {t.name: t for t in make_hotdata_tools(mock_client, database_id=SALES)}
+    for name in ("hotdata_execute_sql", "hotdata_describe_tables"):
+        assert (tools[name].description or "").startswith("Works on the 'sales' database.")
+
+
+def test_the_workspace_tools_do_not_claim_a_database(mock_client: MagicMock) -> None:
+    """Listing, creating and loading act on the workspace, so naming one would be false."""
+    tools = {t.name: t for t in make_hotdata_tools(mock_client, database_id=SALES)}
+    for name in (
+        "hotdata_list_managed_databases",
+        "hotdata_create_managed_database",
+        "hotdata_load_managed_table",
+    ):
+        assert "Works on the" not in (tools[name].description or "")
+
+
+def test_the_label_defaults_to_the_database_name_and_can_be_overridden(
+    mock_client: MagicMock,
+) -> None:
+    tools = {
+        t.name: t
+        for t in make_hotdata_tools(mock_client, database_id=SALES, label="EU support desk")
+    }
+    assert (tools["hotdata_execute_sql"].description or "").startswith(
+        "Works on the 'EU support desk' database."
+    )
+
+
+def test_a_database_with_no_name_gets_no_sentence_rather_than_one_naming_its_id(
+    mock_client: MagicMock,
+) -> None:
+    """An id is not a name; presenting one as a name invites passing it where a name goes."""
+    unnamed = ManagedDatabase(id="dbid3", description=None, default_connection_id="conn3")
+    tools = {t.name: t for t in make_hotdata_tools(mock_client, database_id=unnamed)}
+    described = tools["hotdata_execute_sql"].description or ""
+    assert "Works on the" not in described
+    assert "dbid3" not in described
+
+
+def test_an_unscoped_tool_set_names_no_database(mock_client: MagicMock) -> None:
+    tools = {t.name: t for t in make_hotdata_tools(mock_client)}
+    assert "Works on the" not in (tools["hotdata_execute_sql"].description or "")

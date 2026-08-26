@@ -84,6 +84,30 @@ def query_scope(database: ManagedDatabase | None) -> ManagedDatabase | None:
     )
 
 
+def scoped_description(description: str, label: str | None) -> str:
+    """Return ``description`` led by which database the tool works on.
+
+    Two tool sets built over different databases put two identically-worded tools in one
+    prompt, and a model has nothing to choose between them on. The scope leads rather than
+    trails because it is the one fact that separates them.
+
+    Returns ``description`` unchanged when there is no label, so a single-database tool set
+    carries no sentence about a distinction that does not exist.
+    """
+    if not label:
+        return description
+    return f"Works on the '{label}' database. {description}"
+
+
+def database_label(database: ManagedDatabase | None) -> str | None:
+    """Return the display name of ``database``, or ``None`` when it has none.
+
+    The id is deliberately not a fallback. It carries no meaning a model can plan against,
+    and presenting one as a name invites passing it where a name is expected.
+    """
+    return database.description if database is not None else None
+
+
 def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str]:
     """Return the catalogs that hold tables inside ``database``'s query scope.
 

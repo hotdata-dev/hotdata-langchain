@@ -199,11 +199,13 @@ Grouped by code surface:
   release rather than shipping two breaking versions.
 - **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — **shipped**, both halves: the semantic search tool, and hybrid rank fusion over it and
   BM25 as a single SQL query rather than the client-side fan-out originally planned.
-- **Discovery surface** ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — part 1 **shipped**: `hotdata_describe_tables` reports each
+- ~~**Discovery surface**~~ ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — **done**, both parts. `hotdata_describe_tables` reports each
   column's `searchable_by`, read from `IndexesApi.list_indexes`, and hides the vector columns a
-  provider-backed index generated. No engine change was needed. Still open in that issue:
-  making multi-database tool sets distinguishable, and the un-pinning of the search corpus that
-  this now makes safe.
+  provider-backed index generated; no engine change was needed. `make_hotdata_tools` takes
+  `tool_name_suffix=` so two tool sets no longer both register `hotdata_execute_sql`, and the
+  database-scoped descriptions name their database. What this unlocks is not itself done: the
+  search corpus is still pinned at construction, and un-pinning it is now safe because an agent
+  can read what is searchable rather than guess.
 - ~~**Tool-layer robustness**~~ ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)) — **done.** `with_error_feedback` and `engine_error_message` are
   package API, `make_hotdata_tools(handle_errors=True)` turns the wrapping on, and both the
   sync and async callables are wrapped — the async one is what LangChain actually calls in a

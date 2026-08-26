@@ -638,6 +638,43 @@ the same id or record. Passing the record skips the lookup an id costs on each c
 print(hl.execute_sql_json(client, "SELECT * FROM orders LIMIT 5", database_id="dbid..."))
 ```
 
+## Giving an agent more than one database
+
+One client can query many databases, so registering several tool sets in one agent works. Each
+set needs a name suffix, or every set registers `hotdata_execute_sql` and the model is handed
+tools it cannot tell apart or address:
+
+```python
+sales = hl.make_hotdata_tools(client, database_id="dbid...", tool_name_suffix="sales")
+support = hl.make_hotdata_tools(
+    client, database_id="dbid...", tool_name_suffix="support", management_tools=False
+)
+
+agent = create_agent(model=your_model, tools=[*sales, *support])
+```
+
+That gives `hotdata_execute_sql_sales` and `hotdata_execute_sql_support`, and every
+cross-reference between descriptions follows — the SQL tool points at the schema tool of its own
+set, not the other's. A suffix must be letters, digits, underscores or hyphens, and the whole
+name has to stay within 64 characters — the shortest tool-name limit among the providers this
+package is used with. Both are checked when you build the set rather than when a provider
+first rejects a call.
+
+Descriptions name their database too, so the model has something to choose on rather than two
+identically-worded tools:
+
+> Works on the 'sales' database. Run a read-only SQL query and return the rows as JSON. …
+
+The name comes from the database record; pass `label=` to override it. A database with no name
+gets no such sentence rather than one naming its id. Only the database-scoped tools carry it —
+the instant-database tools act on the workspace, so naming one database in them would be false.
+
+`management_tools=False` on the extra sets is worth it for the same reason: listing, creating
+and loading databases are workspace-wide, so a second copy of them is redundant surface.
+
+Note that a query cannot reach across databases: `SELECT ... FROM other_db.public.t` from within
+one database's scope fails with `table not found`. Each set queries its own.
+
 ## Controlling result size
 
 Limit how many rows are returned to the LLM. Useful for keeping responses within context limits (default: 100):

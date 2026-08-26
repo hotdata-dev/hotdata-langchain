@@ -10,7 +10,11 @@ from hotdata_framework import HotdataClient, ManagedDatabase
 from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import quote_identifier, validate_identifier
-from hotdata_langchain.databases import query_scope, resolve_database_by_id
+from hotdata_langchain.databases import (
+    query_scope,
+    resolve_database_by_id,
+    scoped_description,
+)
 from hotdata_langchain.indexes import (
     SearchIndex,
     generated_vector_columns,
@@ -420,6 +424,7 @@ def make_hotdata_describe_tables_tool(
     column_stats: bool = True,
     search_capabilities: bool = True,
     catalogs: Sequence[str] | None = None,
+    label: str | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
 
@@ -434,6 +439,9 @@ def make_hotdata_describe_tables_tool(
     ``search_capabilities`` (on by default) reports what each column can be searched by,
     at the cost of one control-plane call per described table. Turn it off to describe a
     table without asking what is indexed on it.
+
+    ``label`` names the database in the description, so two tool sets over different
+    databases are distinguishable in one prompt.
 
     Fails fast on a non-positive ``max_columns`` rather than at first invocation.
     """
@@ -461,11 +469,14 @@ def make_hotdata_describe_tables_tool(
     return StructuredTool.from_function(
         func=hotdata_describe_tables,
         name=name,
-        description=description
-        or default_describe_description(
-            column_stats=column_stats,
-            search_capabilities=search_capabilities,
-            catalogs=catalogs,
+        description=scoped_description(
+            description
+            or default_describe_description(
+                column_stats=column_stats,
+                search_capabilities=search_capabilities,
+                catalogs=catalogs,
+            ),
+            label,
         ),
         parse_docstring=True,
     )
