@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-26
+
 ### Added
 
 - **`hotdata_describe_tables` reports which columns can be searched, and by what.** Each column
@@ -34,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer puts two tools called `hotdata_execute_sql` in one prompt — a name the model can
   neither address nor choose between. Cross-references between descriptions follow the suffix,
   so the SQL tool points at the schema tool of its own set. The suffix is validated when the set
-  is built (letters, digits, underscores or hyphens; the result within the 64-character limit
-  tool-calling APIs impose) rather than when a provider first rejects a call. An explicit
+  is built (letters, digits, underscores or hyphens; the whole name within 64 characters, the
+  shortest tool-name limit among the providers this package is used with) rather than when a
+  provider first rejects a call. An explicit
   `search_tool_name` is used exactly as given, since naming that tool is already the caller's
   decision. `suffixed_tool_name` is exported for callers registering tools of their own
   alongside these.
