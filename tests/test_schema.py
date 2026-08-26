@@ -622,6 +622,39 @@ def test_an_index_still_building_is_not_reported_as_searchable(search_indexes: M
     assert "search" not in payload
 
 
+def test_a_building_provider_index_still_hides_the_column_it_generated(
+    search_indexes: MagicMock,
+) -> None:
+    """Two decisions come off one listing, and only one of them turns on readiness.
+
+    A generated vector column is generated whether or not the index over it has finished
+    building. Dropping unready indexes before this filter would describe a float list to
+    the model as ordinary data — the outcome the filter exists to prevent — in the window
+    where the index is not usable anyway.
+    """
+    columns = result(
+        ["table_schema", "table_name", "column_name", "data_type"],
+        [
+            ["public", "listings", "description", "LargeUtf8"],
+            ["public", "listings", "description_embedding", "List(Float32)"],
+        ],
+    )
+    payload, _ = _described(
+        search_indexes,
+        [
+            vector_index(
+                columns=["description_embedding"],
+                source_column="description",
+                status="building",
+            )
+        ],
+        columns=columns,
+    )
+    assert [c["name"] for c in payload["columns"]] == ["description"]
+    assert all("searchable_by" not in c for c in payload["columns"])
+    assert "search" not in payload
+
+
 def test_the_note_explaining_searchable_by_appears_only_when_something_carries_it(
     search_indexes: MagicMock,
 ) -> None:

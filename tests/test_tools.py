@@ -535,6 +535,22 @@ def test_a_suffix_that_no_provider_would_accept_fails_at_build_time(
         make_hotdata_tools(mock_client, database_id=SALES, tool_name_suffix=suffix)
 
 
+def test_the_length_limit_is_checked_against_the_tools_actually_built(
+    mock_client: MagicMock,
+) -> None:
+    """Otherwise the error names a tool the caller excluded, which reads as a bug.
+
+    `hotdata_create_managed_database` is the longest base name in the set, so a suffix can
+    be too long for it and fine for everything else.
+    """
+    suffix = "x" * 33
+    names = _names(mock_client, database_id=SALES, management_tools=False, tool_name_suffix=suffix)
+    assert names and all(n.endswith(suffix) for n in names)
+
+    with pytest.raises(ValueError, match="hotdata_create_managed_database"):
+        make_hotdata_tools(mock_client, database_id=SALES, tool_name_suffix=suffix)
+
+
 def test_the_database_scoped_tools_name_their_database(mock_client: MagicMock) -> None:
     tools = {t.name: t for t in make_hotdata_tools(mock_client, database_id=SALES)}
     for name in ("hotdata_execute_sql", "hotdata_describe_tables"):

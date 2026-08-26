@@ -355,6 +355,15 @@ def _tool_builds() -> list[tuple[str, dict[str, object]]]:
             },
         ),
         (
+            "suffix with an uppercase letter",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "Sales",
+            },
+        ),
+        (
             "suffixed semantic search",
             {
                 "search_table": TABLE,
@@ -443,10 +452,11 @@ def test_no_description_points_at_a_tool_that_is_not_registered(
     dangling = {
         (tool.name, ref)
         for tool in tools
-        # Digits and hyphens are legal in a tool name, and a name-suffixed set puts them
-        # there: `[a-z_]+` truncated `hotdata_describe_tables_f1` to `..._f` and reported
-        # a correct reference as dangling.
-        for ref in re.findall(r"hotdata_[a-z0-9_-]+", _model_facing(tool))
+        # The class has to be everything TOOL_NAME_PATTERN permits. A narrower one
+        # truncates a suffixed name at the first character it excludes and reports the
+        # prefix as dangling, failing a correct build: `[a-z_]+` did that to
+        # `hotdata_describe_tables_f1`, and `[a-z0-9_-]+` would to `..._Sales`.
+        for ref in re.findall(r"hotdata_[A-Za-z0-9_-]+", _model_facing(tool))
         if ref not in registered
     }
     assert not dangling, f"[{label}] descriptions name unregistered tools: {sorted(dangling)}"
