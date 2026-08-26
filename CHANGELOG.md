@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`hotdata_describe_tables` reports which columns can be searched, and by what.** Each column
+  of a described table carries `searchable_by` — `text relevance` where it has a keyword index,
+  `meaning` where it has a vector one. Indexes are invisible to SQL (there is no `pg_indexes`
+  and no `information_schema.indexes`), so this was the one fact about a table an agent could
+  not look up and had to be told at construction. The capability is named rather than the
+  mechanism: a model can act on "matches the words a value uses", not on "bm25".
+
+  Only indexes the engine reports as ready are named, because a search against one still
+  building fails after the model has committed to that route. The cost is one control-plane
+  call per described table, and only on the per-table call — the no-argument listing stays
+  index-free, so a wide database does not become N calls. `describe_search_capabilities=False`
+  on `make_hotdata_tools`, or `search_capabilities=False` on the lower-level helpers, turns it
+  off.
+- A table's generated vector columns are left out of its description. Where a vector index was
+  built by an embedding provider over a text column, the engine materialises a vector column
+  beside it — `content` produces `content_embedding` — and `information_schema` reports it as an
+  ordinary column with nothing marking it as generated. Describing a 1536-wide float list as
+  ordinary data invites queries against it, so the text column carries the `meaning` capability
+  and the generated column is not listed. Turning `search_capabilities` off also stops the
+  filtering, since nothing then knows the column was generated.
+- `SEARCH_NOUNS` and `search_nouns_by_column` name a search capability on its own, where
+  `CAPABILITY_PHRASES` and `capabilities_by_column` give it as a sentence fragment. The phrases
+  are now derived from the nouns, so a payload field and a description sentence cannot drift
+  into naming the same capability two ways.
+
 ### Fixed
 
 - `pip install hotdata-langchain` now has a form that provides everything the documented

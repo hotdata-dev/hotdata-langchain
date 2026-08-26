@@ -304,6 +304,7 @@ def make_hotdata_tools(
     search_semantic_column: str | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
+    describe_search_capabilities: bool = True,
     management_tools: bool = True,
     handle_errors: bool = False,
     allow_private_hosts: bool = False,
@@ -324,6 +325,9 @@ def make_hotdata_tools(
     ``describe_column_stats`` (on by default) has that tool also report how many rows
     hold a value in each column, so an empty column is visible as such rather than as an
     ordinary typed one; it costs one aggregate query per table described.
+    ``describe_search_capabilities`` (on by default) has it also report what each column
+    can be searched by, which is the one fact about a table that SQL cannot answer; it
+    costs one control-plane call per table described.
 
     ``management_tools`` (on by default) adds the three tools that work on instant
     databases themselves — listing, creating and loading. Turn it off for an agent that
@@ -556,6 +560,7 @@ def make_hotdata_tools(
                 client,
                 database_id=database,
                 column_stats=describe_column_stats,
+                search_capabilities=describe_search_capabilities,
                 catalogs=catalogs,
             )
         )

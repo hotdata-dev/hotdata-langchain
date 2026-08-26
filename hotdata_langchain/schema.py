@@ -11,6 +11,12 @@ from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import quote_identifier, validate_identifier
 from hotdata_langchain.databases import query_scope, resolve_database_by_id
+from hotdata_langchain.indexes import (
+    SearchIndex,
+    generated_vector_columns,
+    list_search_indexes,
+    search_nouns_by_column,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +127,25 @@ def _quotable(name: str) -> bool:
     return True
 
 
+def _table_indexes(
+    client: HotdataClient,
+    *,
+    schema: str,
+    name: str,
+    database: ManagedDatabase | None,
+) -> list[SearchIndex]:
+    """Return the search indexes on one table, or none when the scope cannot answer.
+
+    Indexes belong to a connection, so an unscoped call has nothing to ask. Schema and
+    table come from the rows ``information_schema`` returned rather than from re-parsing
+    the reference, so a name this package would not have parsed still resolves.
+    """
+    if database is None:
+        logger.debug("no database scope for %s.%s; not reporting searchable columns", schema, name)
+        return []
+    return list_search_indexes(client, table=name, schema=schema, database=database)
+
+
 def _column_stats(
     client: HotdataClient,
     *,
@@ -201,6 +226,7 @@ def describe_tables_json(
     database_id: str | ManagedDatabase | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
     column_stats: bool = True,
+    search_capabilities: bool = True,
 ) -> str:
     """Describe the scoped database's tables, or one table's columns, as JSON.
 
@@ -215,6 +241,15 @@ def describe_tables_json(
     is NULL on all 7,535 rows, and a table of 63 columns where most are populated only
     by the instrumentation that writes them presents every one as equally available.
     Turn it off to describe a table without scanning it.
+
+    ``search_capabilities`` annotates each column with ``searchable_by`` — what it can be
+    ranked by, as ``text relevance`` or ``meaning`` — at the cost of one control-plane
+    call per described table. Indexes are invisible to SQL, so this is the only way an
+    agent can find out which column to search rather than guess. It also drops the vector
+    columns a provider-backed index generated: those are real columns that no caller
+    wrote, and describing a 1536-wide float list as ordinary data invites queries against
+    it. Only indexes the engine reports as ready are named, because a search against one
+    still building fails after the model has committed to the route.
 
     A table that is declared on the database but has never been loaded reports no
     columns at all, which reads as a missing table. It is reported as declared and
@@ -268,11 +303,37 @@ def describe_tables_json(
     truncated = len(records) > max_columns
     records = records[:max_columns]
     qualified = f"{records[0]['table_schema']}.{records[0]['table_name']}"
+    indexes = (
+        _table_indexes(
+            client,
+            schema=str(records[0]["table_schema"]),
+            name=str(records[0]["table_name"]),
+            database=database,
+        )
+        if search_capabilities
+        else []
+    )
+    generated = set(generated_vector_columns(indexes))
+    records = [r for r in records if str(r["column_name"]) not in generated]
     names = [str(r["column_name"]) for r in records]
     columns: list[dict[str, object]] = [
         {"name": name, "type": r["data_type"]} for name, r in zip(names, records, strict=True)
     ]
+    searchable = search_nouns_by_column(indexes)
+    annotated = False
+    for entry in columns:
+        nouns = searchable.get(str(entry["name"]))
+        if nouns:
+            entry["searchable_by"] = nouns
+            annotated = True
     payload: dict[str, object] = {"table": qualified, "columns": columns}
+    if annotated:
+        payload["search"] = (
+            "searchable_by names what a column can be ranked by: 'text relevance' matches "
+            "the words a value uses, 'meaning' matches what it is about. A column without "
+            "it can still be filtered in SQL, but a substring filter is not a search — it "
+            "matches only the literal characters given."
+        )
     stats = (
         _column_stats(client, table=qualified, columns=names, database=database)
         if column_stats
@@ -297,6 +358,7 @@ def describe_tables_json(
 def default_describe_description(
     *,
     column_stats: bool = True,
+    search_capabilities: bool = True,
     catalogs: Sequence[str] | None = None,
 ) -> str:
     """Return the agent-facing description for the schema tool.
@@ -305,6 +367,11 @@ def default_describe_description(
     description as well as in the payload because the point of the counts is to change
     what the model plans before it reads any rows, and a column it never asked about is
     a column whose emptiness it never sees.
+
+    ``search_capabilities`` adds the sentence about ``searchable_by``, for the same reason
+    ``column_stats`` earns one: which column is searchable cannot be read in SQL, so a
+    model that does not know this tool reports it has no way to find out, and picks a
+    column to search by guessing.
 
     ``catalogs`` names the catalogs the tools are scoped to, and the worked example uses
     one only when there is exactly one to use. There is no correct constant to fall back
@@ -322,6 +389,13 @@ def default_describe_description(
         if column_stats
         else ""
     )
+    searchable = (
+        "A column that can be searched also reports 'searchable_by': 'text relevance' "
+        "matches the words a value uses, 'meaning' matches what it is about. Check it "
+        "before searching — which column is searchable cannot be worked out from SQL.\n"
+        if search_capabilities
+        else ""
+    )
     known = list(catalogs or ())
     full = f"'{known[0]}.public.listings'" if len(known) == 1 else "the full 'catalog.schema.table'"
     return (
@@ -330,6 +404,7 @@ def default_describe_description(
         f"table name ('listings', 'public.listings' or {full}) it "
         "returns that table's columns and their types.\n"
         f"{populated}"
+        f"{searchable}"
         "Use it whenever you are unsure a table or column exists — guessing a column "
         "name that is not there makes the query fail."
     )
@@ -343,6 +418,7 @@ def make_hotdata_describe_tables_tool(
     description: str | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
     column_stats: bool = True,
+    search_capabilities: bool = True,
     catalogs: Sequence[str] | None = None,
 ) -> StructuredTool:
     """Return a LangChain tool that reports the scoped database's tables and columns.
@@ -354,6 +430,10 @@ def make_hotdata_describe_tables_tool(
     ``column_stats`` (on by default) reports each column's non-NULL count alongside its
     type, at the cost of one aggregate query per described table. Turn it off where
     describing a table must not scan it.
+
+    ``search_capabilities`` (on by default) reports what each column can be searched by,
+    at the cost of one control-plane call per described table. Turn it off to describe a
+    table without asking what is indexed on it.
 
     Fails fast on a non-positive ``max_columns`` rather than at first invocation.
     """
@@ -375,12 +455,17 @@ def make_hotdata_describe_tables_tool(
             database_id=database,
             max_columns=max_columns,
             column_stats=column_stats,
+            search_capabilities=search_capabilities,
         )
 
     return StructuredTool.from_function(
         func=hotdata_describe_tables,
         name=name,
         description=description
-        or default_describe_description(column_stats=column_stats, catalogs=catalogs),
+        or default_describe_description(
+            column_stats=column_stats,
+            search_capabilities=search_capabilities,
+            catalogs=catalogs,
+        ),
         parse_docstring=True,
     )

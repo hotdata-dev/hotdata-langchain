@@ -12,7 +12,7 @@ read it off :class:`SearchIndex`, but the words that reach a model come from the
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
@@ -27,10 +27,16 @@ SearchKind = Literal["text", "semantic"]
 TEXT: Final[SearchKind] = "text"
 SEMANTIC: Final[SearchKind] = "semantic"
 
+#: What each kind is called where the capability is named on its own — a payload field,
+#: a list of what a column supports.
+SEARCH_NOUNS: dict[str, str] = {
+    TEXT: "text relevance",
+    SEMANTIC: "meaning",
+}
+
 #: How each kind reads in a sentence written for a model.
 CAPABILITY_PHRASES: dict[str, str] = {
-    TEXT: "searchable by text relevance",
-    SEMANTIC: "searchable by meaning",
+    kind: f"searchable by {noun}" for kind, noun in SEARCH_NOUNS.items()
 }
 
 _READY = "ready"
@@ -70,6 +76,11 @@ class SearchIndex:
     def capability(self) -> str:
         """Return the phrase describing this index for a model-facing sentence."""
         return CAPABILITY_PHRASES[self.kind]
+
+    @property
+    def search_noun(self) -> str:
+        """Return what this index makes the column searchable by, named on its own."""
+        return SEARCH_NOUNS[self.kind]
 
 
 def _search_index(index: Any) -> SearchIndex | None:
@@ -187,6 +198,18 @@ def indexes_for_column(indexes: Sequence[SearchIndex], column: str) -> list[Sear
     return [index for index in indexes if index.column == column]
 
 
+def _by_column(
+    indexes: Sequence[SearchIndex], describe: Callable[[SearchIndex], str]
+) -> dict[str, list[str]]:
+    by_column: dict[str, list[str]] = {}
+    for index in indexes:
+        entries = by_column.setdefault(index.column, [])
+        described = describe(index)
+        if described not in entries:
+            entries.append(described)
+    return by_column
+
+
 def capabilities_by_column(indexes: Sequence[SearchIndex]) -> dict[str, list[str]]:
     """Return each column's search capabilities, as phrases, keyed by column name.
 
@@ -196,12 +219,17 @@ def capabilities_by_column(indexes: Sequence[SearchIndex]) -> dict[str, list[str
     different columns of the same table, and a provider-backed index cannot share a table
     with any other index at all.
     """
-    by_column: dict[str, list[str]] = {}
-    for index in indexes:
-        phrases = by_column.setdefault(index.column, [])
-        if index.capability not in phrases:
-            phrases.append(index.capability)
-    return by_column
+    return _by_column(indexes, lambda index: index.capability)
+
+
+def search_nouns_by_column(indexes: Sequence[SearchIndex]) -> dict[str, list[str]]:
+    """Return what each column is searchable by, keyed by column name.
+
+    The same grouping as :func:`capabilities_by_column`, naming the capability on its own
+    rather than as a sentence fragment, for a payload field that already says the column
+    is searchable.
+    """
+    return _by_column(indexes, lambda index: index.search_noun)
 
 
 def generated_vector_columns(indexes: Sequence[SearchIndex]) -> Iterator[str]:

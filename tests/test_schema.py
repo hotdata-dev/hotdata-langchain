@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +19,7 @@ from hotdata_langchain.schema import (
     table_overview_sql,
 )
 from hotdata_langchain.tools import make_hotdata_tools
+from tests.conftest import bm25_index, vector_index
 
 
 def result(columns: list[str], rows: list[list[object]]) -> QueryResult:
@@ -525,3 +527,182 @@ def test_an_uppercased_managed_catalog_still_finds_an_unloaded_table(
         describe_tables_json(client, table="DEFAULT.public.customer", database_id=managed_db)
     )
     assert "no data yet" in payload["note"]
+
+
+MANAGED_DB = ManagedDatabase(
+    id="dbidsf000000000000000000000001",
+    description="sf_airbnb",
+    default_connection_id="conn_sf",
+)
+
+
+# --- Searchable columns -----------------------------------------------------------
+#
+# Indexes are invisible to SQL, so the control plane is the only source for this. These
+# pin what reaches the model: the capability rather than the mechanism, ready indexes
+# only, and no generated vector column presented as ordinary data.
+
+
+def _described(
+    search_indexes: MagicMock,
+    indexes: list[SimpleNamespace],
+    columns: QueryResult = COLUMNS,
+    *,
+    search_capabilities: bool = True,
+) -> tuple[dict[str, Any], MagicMock]:
+    client = MagicMock()
+    client.execute_sql.return_value = columns
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(indexes=indexes)
+    payload = json.loads(
+        describe_tables_json(
+            client,
+            table="listings",
+            database_id=MANAGED_DB,
+            column_stats=False,
+            search_capabilities=search_capabilities,
+        )
+    )
+    return payload, client
+
+
+def test_a_bm25_index_reports_its_column_as_searchable_by_text_relevance(
+    search_indexes: MagicMock,
+) -> None:
+    payload, _ = _described(search_indexes, [bm25_index(column="description")])
+    by_name = {c["name"]: c for c in payload["columns"]}
+    assert by_name["description"]["searchable_by"] == ["text relevance"]
+    assert "searchable_by" not in by_name["id"]
+
+
+def test_the_capability_is_named_not_the_index_type(search_indexes: MagicMock) -> None:
+    """'bm25' is a mechanism the model cannot act on; 'text relevance' is a capability."""
+    payload, _ = _described(search_indexes, [bm25_index(column="description")])
+    assert "bm25" not in json.dumps(payload).lower()
+
+
+def test_a_provider_backed_index_marks_the_text_column_and_hides_the_vector_it_generated(
+    search_indexes: MagicMock,
+) -> None:
+    """The generated column is real in information_schema and is not the model's to query."""
+    columns = result(
+        ["table_schema", "table_name", "column_name", "data_type"],
+        [
+            ["public", "listings", "id", "Int64"],
+            ["public", "listings", "description", "LargeUtf8"],
+            ["public", "listings", "description_embedding", "List(Float32)"],
+        ],
+    )
+    payload, _ = _described(
+        search_indexes,
+        [vector_index(columns=["description_embedding"], source_column="description")],
+        columns=columns,
+    )
+    names = [c["name"] for c in payload["columns"]]
+    assert names == ["id", "description"]
+    by_name = {c["name"]: c for c in payload["columns"]}
+    assert by_name["description"]["searchable_by"] == ["meaning"]
+
+
+def test_a_plain_vector_index_marks_the_column_it_was_built_over(search_indexes: MagicMock) -> None:
+    """No source column, so the vector column is the one a query names — and it stays visible."""
+    columns = result(
+        ["table_schema", "table_name", "column_name", "data_type"],
+        [["public", "listings", "embedding", "List(Float32)"]],
+    )
+    payload, _ = _described(search_indexes, [vector_index(columns=["embedding"])], columns=columns)
+    assert payload["columns"] == [
+        {"name": "embedding", "type": "List(Float32)", "searchable_by": ["meaning"]}
+    ]
+
+
+def test_an_index_still_building_is_not_reported_as_searchable(search_indexes: MagicMock) -> None:
+    """A search against a pending index fails after the model has committed to the route."""
+    payload, _ = _described(search_indexes, [bm25_index(column="description", status="building")])
+    assert all("searchable_by" not in c for c in payload["columns"])
+    assert "search" not in payload
+
+
+def test_the_note_explaining_searchable_by_appears_only_when_something_carries_it(
+    search_indexes: MagicMock,
+) -> None:
+    with_index, _ = _described(search_indexes, [bm25_index(column="description")])
+    without, _ = _described(search_indexes, [])
+    assert "text relevance" in with_index["search"]
+    assert "search" not in without
+
+
+def test_search_capabilities_off_asks_the_control_plane_nothing(search_indexes: MagicMock) -> None:
+    payload, _ = _described(
+        search_indexes, [bm25_index(column="description")], search_capabilities=False
+    )
+    search_indexes.return_value.list_indexes.assert_not_called()
+    assert all("searchable_by" not in c for c in payload["columns"])
+
+
+def test_an_unscoped_describe_reports_no_capabilities_rather_than_failing(
+    search_indexes: MagicMock,
+) -> None:
+    """Indexes belong to a connection, so there is nothing to ask without a scope."""
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS
+    payload = json.loads(describe_tables_json(client, table="listings", column_stats=False))
+    search_indexes.return_value.list_indexes.assert_not_called()
+    assert all("searchable_by" not in c for c in payload["columns"])
+
+
+def test_the_table_overview_makes_no_index_call(search_indexes: MagicMock) -> None:
+    """One call per table would be N calls for a wide database, for a listing that has no room."""
+    client = MagicMock()
+    client.execute_sql.return_value = OVERVIEW
+    describe_tables_json(client, database_id=MANAGED_DB)
+    search_indexes.return_value.list_indexes.assert_not_called()
+
+
+def test_a_generated_vector_column_is_not_counted_either(search_indexes: MagicMock) -> None:
+    """It is dropped before the stats aggregate, so nothing scans a 1536-wide float list."""
+    client = MagicMock()
+    client.execute_sql.return_value = result(
+        ["table_schema", "table_name", "column_name", "data_type"],
+        [
+            ["public", "listings", "description", "LargeUtf8"],
+            ["public", "listings", "description_embedding", "List(Float32)"],
+        ],
+    )
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[vector_index(columns=["description_embedding"], source_column="description")]
+    )
+    describe_tables_json(client, table="listings", database_id=MANAGED_DB)
+    stats_sql = executed_sqls(client)[-1]
+    assert "description_embedding" not in stats_sql
+    assert "description" in stats_sql
+
+
+def test_the_description_tells_the_model_the_tool_reports_searchability() -> None:
+    """A model that does not know this tool answers the question never asks it."""
+    described = default_describe_description()
+    assert "searchable_by" in described
+    assert "text relevance" in described and "meaning" in described
+    assert "searchable_by" not in default_describe_description(search_capabilities=False)
+
+
+def test_the_description_never_names_the_index_type() -> None:
+    assert "bm25" not in default_describe_description().lower()
+
+
+def test_the_tool_set_can_turn_searchability_off(search_indexes: MagicMock) -> None:
+    client = MagicMock()
+    client.execute_sql.return_value = COLUMNS
+    search_indexes.return_value.list_indexes.return_value = SimpleNamespace(
+        indexes=[bm25_index(column="description")]
+    )
+    tools = {
+        t.name: t
+        for t in make_hotdata_tools(
+            client, database_id=MANAGED_DB, describe_search_capabilities=False
+        )
+    }
+    describe = tools["hotdata_describe_tables"]
+    assert "searchable_by" not in (describe.description or "")
+    payload = json.loads(describe.invoke({"table": "listings"}))
+    search_indexes.return_value.list_indexes.assert_not_called()
+    assert all("searchable_by" not in c for c in payload["columns"])

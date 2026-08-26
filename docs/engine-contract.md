@@ -355,12 +355,20 @@ hybrid/RRF/fusion across the engine finds nothing.
 Working in SQL: `information_schema.tables`, `information_schema.columns` (with
 `table_catalog`, `table_schema`, `table_name`, `column_name`, `ordinal_position`, `data_type`,
 `is_nullable`), `SHOW TABLES`, and `DESCRIBE <table>`. `hotdata_langchain/schema.py` builds on
-`information_schema.columns`, so it needs no extra permissions.
+`information_schema.columns` for the schema itself, which needs no permission beyond the query
+scope; describing one table additionally reads the control plane, below.
 
 **Indexes are not visible in SQL** — no `pg_indexes`, no `information_schema.indexes`. They are
 only reachable through the control plane, `IndexesApi.list_indexes(connection_id, schema, table)`,
-which returns index name, type, columns and status. This is why an agent cannot currently
-discover which columns are searchable, and why the search tool pins its corpus.
+which returns index name, type, columns and status. `hotdata_describe_tables` makes that call per
+described table, so an agent can now read which columns are searchable; the search tool still
+pins its corpus at construction.
+
+Observed live (2026-08-26, `api.hotdata.dev`) on a provider-backed index over
+`vector_spike.public.listings_semantic`: `information_schema` reports the generated
+`content_embedding` as an ordinary column alongside the `content` it was derived from, and the
+index reports `source_column = content`. The link between the two exists only in the index
+record — nothing in `information_schema` marks the generated column as generated.
 
 ## Databases and workspaces
 

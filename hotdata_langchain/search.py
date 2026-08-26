@@ -1113,10 +1113,11 @@ def make_hotdata_search_tool(
     it must be the same model the column was written with.
     See :func:`resolve_search_route` for why ``auto`` needs no preference rule.
 
-    The corpus is pinned here rather than chosen by the model: nothing in the tool
-    surface lets an agent discover which columns are searchable, and the engine errors
-    outright when the index is missing. The agent supplies only ``query`` and an
-    optional ``k``.
+    The corpus is pinned here rather than chosen by the model: the engine errors outright
+    when the index is missing, so a model choosing its own corpus can pick one that cannot
+    answer. ``hotdata_describe_tables`` reports which columns are searchable, but this tool
+    does not yet take the table and column from the agent. It supplies only ``query`` and
+    an optional ``k``.
 
     ``database_id`` scopes the search to one instant database, by id and never by name;
     it is resolved once here. Pass an already-resolved ``ManagedDatabase`` to skip the
