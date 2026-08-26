@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`hotdata_describe_tables` reports which columns can be searched, and by what.** Each column
+  of a described table carries `searchable_by` — `text relevance` where it has a keyword index,
+  `meaning` where it has a vector one. Indexes are invisible to SQL (there is no `pg_indexes`
+  and no `information_schema.indexes`), so this was the one fact about a table an agent could
+  not look up and had to be told at construction. The capability is named rather than the
+  mechanism: a model can act on "matches the words a value uses", not on "bm25".
+
+  Only indexes the engine reports as ready are named, because a search against one still
+  building fails after the model has committed to that route. The cost is one control-plane
+  call per described table, and only on the per-table call — the no-argument listing stays
+  index-free, so a wide database does not become N calls. `describe_search_capabilities=False`
+  on `make_hotdata_tools`, or `search_capabilities=False` on the lower-level helpers, turns it
+  off.
+- A table's generated vector columns are left out of its description. Where a vector index was
+  built by an embedding provider over a text column, the engine materialises a vector column
+  beside it — `content` produces `content_embedding` — and `information_schema` reports it as an
+  ordinary column with nothing marking it as generated. Describing a 1536-wide float list as
+  ordinary data invites queries against it, so the text column carries the `meaning` capability
+  and the generated column is not listed. Turning `search_capabilities` off also stops the
+  filtering, since nothing then knows the column was generated.
+- **Two tool sets over different databases can be told apart.** `make_hotdata_tools` takes
+  `tool_name_suffix=`, appended to every tool name in the set, so registering a second set no
+  longer puts two tools called `hotdata_execute_sql` in one prompt — a name the model can
+  neither address nor choose between. Cross-references between descriptions follow the suffix,
+  so the SQL tool points at the schema tool of its own set. The suffix is validated when the set
+  is built (letters, digits, underscores or hyphens; the result within the 64-character limit
+  tool-calling APIs impose) rather than when a provider first rejects a call. An explicit
+  `search_tool_name` is used exactly as given, since naming that tool is already the caller's
+  decision. `suffixed_tool_name` is exported for callers registering tools of their own
+  alongside these.
+- **Descriptions name the database they work on.** The SQL, schema and search tools now open
+  with `Works on the 'sales' database.`, taken from the database record and overridable with
+  `label=`. The instant-database tools deliberately do not: they act on the workspace, so
+  naming one database in them would be false. A database with no name gets no such sentence
+  rather than one naming its id, which would present an id where a name is expected.
+- `SEARCH_NOUNS` and `search_nouns_by_column` name a search capability on its own, where
+  `CAPABILITY_PHRASES` and `capabilities_by_column` give it as a sentence fragment. The phrases
+  are now derived from the nouns, so a payload field and a description sentence cannot drift
+  into naming the same capability two ways.
+
 ### Fixed
 
 - `pip install hotdata-langchain` now has a form that provides everything the documented

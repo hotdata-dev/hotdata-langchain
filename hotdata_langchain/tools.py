@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,6 +14,7 @@ from langchain_core.tools import StructuredTool
 from hotdata_langchain._sql import format_pattern_warnings
 from hotdata_langchain.databases import (
     create_managed_database,
+    database_label,
     list_managed_databases_json,
     load_managed_table,
     load_result_summary,
@@ -20,6 +22,7 @@ from hotdata_langchain.databases import (
     query_catalogs,
     query_scope,
     resolve_database_by_id,
+    scoped_description,
 )
 from hotdata_langchain.errors import HotdataToolError, engine_error_message, with_error_feedback
 from hotdata_langchain.results import result_json
@@ -37,6 +40,11 @@ from hotdata_langchain.search import (
     make_hotdata_search_tool,
     resolve_search_route,
 )
+
+#: What a tool name may contain, and how long it may be. Tool-calling APIs validate the
+#: name, and 64 is the shortest limit among the providers this package is used with.
+TOOL_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+MAX_TOOL_NAME_LENGTH = 64
 
 DEFAULT_SQL_TOOL_NAME = "hotdata_execute_sql"
 DEFAULT_LIST_DATABASES_TOOL_NAME = "hotdata_list_managed_databases"
@@ -245,6 +253,32 @@ def sql_tool_description(
     )
 
 
+def suffixed_tool_name(name: str, suffix: str | None) -> str:
+    """Return ``name`` with ``suffix`` appended after an underscore.
+
+    Registering two tool sets over different databases puts two tools called
+    ``hotdata_execute_sql`` in one prompt, and a model cannot address either. The suffix
+    is what separates them, so it is validated here rather than at the point a provider
+    rejects the call: it must be a bare token of letters, digits, underscores or hyphens,
+    and the result must fit the 64-character limit.
+
+    Returns ``name`` unchanged when ``suffix`` is ``None``.
+    """
+    if suffix is None:
+        return name
+    if not TOOL_NAME_PATTERN.fullmatch(suffix):
+        raise ValueError(
+            f"tool name suffix must be letters, digits, underscores or hyphens, got {suffix!r}"
+        )
+    combined = f"{name}_{suffix}"
+    if len(combined) > MAX_TOOL_NAME_LENGTH:
+        raise ValueError(
+            f"{combined!r} is {len(combined)} characters; tool names are capped at "
+            f"{MAX_TOOL_NAME_LENGTH}, so {suffix!r} is too long a suffix"
+        )
+    return combined
+
+
 def result_rows_for_llm(result: QueryResult, *, max_rows: int = 20) -> list[dict[str, Any]]:
     return result.to_records(max_rows=max_rows)
 
@@ -304,10 +338,13 @@ def make_hotdata_tools(
     search_semantic_column: str | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
+    describe_search_capabilities: bool = True,
     management_tools: bool = True,
     handle_errors: bool = False,
     allow_private_hosts: bool = False,
     catalog: str | None = None,
+    tool_name_suffix: str | None = None,
+    label: str | None = None,
 ) -> list[StructuredTool]:
     """Return LangChain tools for SQL and instant database workflows.
 
@@ -324,6 +361,19 @@ def make_hotdata_tools(
     ``describe_column_stats`` (on by default) has that tool also report how many rows
     hold a value in each column, so an empty column is visible as such rather than as an
     ordinary typed one; it costs one aggregate query per table described.
+    ``describe_search_capabilities`` (on by default) has it also report what each column
+    can be searched by, which is the one fact about a table that SQL cannot answer; it
+    costs one control-plane call per table described.
+
+    ``tool_name_suffix`` appends a token to every tool name in the set, so two sets built
+    over different databases do not both register ``hotdata_execute_sql`` — a name a model
+    cannot address twice. An explicit ``search_tool_name`` is used exactly as given, since
+    naming that tool is already the caller's own decision.
+
+    ``label`` names the database at the front of every description that is scoped to it —
+    the SQL, schema and search tools, but not the instant-database tools, which act on the
+    workspace rather than on one database. It defaults to the resolved database's name,
+    and a database with no name gets no sentence rather than one naming its id.
 
     ``management_tools`` (on by default) adds the three tools that work on instant
     databases themselves — listing, creating and loading. Turn it off for an agent that
@@ -484,79 +534,94 @@ def make_hotdata_tools(
     )
     # The name reaches the model too, so it follows the route: a semantic search called
     # "search_text" would tell the model it matches wording, which is what it does not do.
-    resolved_search_name = search_tool_name or (
+    resolved_search_name = search_tool_name or suffixed_tool_name(
         DEFAULT_SEMANTIC_TOOL_NAME
         if search_route is not None and search_route.semantic
-        else DEFAULT_SEARCH_TOOL_NAME
+        else DEFAULT_SEARCH_TOOL_NAME,
+        tool_name_suffix,
     )
+    sql_name = suffixed_tool_name(DEFAULT_SQL_TOOL_NAME, tool_name_suffix)
+    describe_name = suffixed_tool_name(DEFAULT_DESCRIBE_TOOL_NAME, tool_name_suffix)
+    scope_label = label if label is not None else database_label(database)
     tools = [
         StructuredTool.from_function(
             func=hotdata_execute_sql,
-            name=DEFAULT_SQL_TOOL_NAME,
-            description=sql_tool_description(
-                resolved_search_name if has_search else None,
-                DEFAULT_DESCRIBE_TOOL_NAME if describe_tables else None,
-                search_table=search_table if has_search else None,
-                search_column=search_column if has_search else None,
-                search_route=search_route,
-                catalogs=catalogs,
-                max_rows=max_rows,
-            ),
-            parse_docstring=True,
-        ),
-    ]
-
-    management = [
-        StructuredTool.from_function(
-            func=hotdata_list_managed_databases,
-            name=DEFAULT_LIST_DATABASES_TOOL_NAME,
-            description=(
-                "List the instant databases in this workspace. Returns each database's "
-                "'id' and its human-readable 'name'. Names are display labels and are "
-                "not unique — pass the 'id' to other tools, never the name. "
-                "An id cannot be guessed or built from a name; it only comes from here or "
-                "from creating a database."
-            ),
-        ),
-        StructuredTool.from_function(
-            func=hotdata_create_managed_database,
-            name=DEFAULT_CREATE_DATABASE_TOOL_NAME,
-            description=(
-                "Create an instant database to hold tables you load. 'name' is a display "
-                "label only and is not an identifier; the response carries the 'id', which "
-                "is what every other tool needs — keep it. Declare the tables you intend "
-                "to load up front as a comma- or newline-separated list, so data loads "
-                "straight into them."
-            ),
-            parse_docstring=True,
-        ),
-        StructuredTool.from_function(
-            func=hotdata_load_managed_table,
-            name=DEFAULT_LOAD_TABLE_TOOL_NAME,
-            description=(
-                "Load a parquet file into a table that was declared on an instant "
-                "database, replacing whatever the table held. 'file' is either a path on "
-                "the local filesystem or an http:// or https:// URL, which is downloaded "
-                f"and uploaded for you{url_rule}. 'database_id' must be a database id returned by "
-                "hotdata_list_managed_databases or hotdata_create_managed_database — call "
-                "one of those first if you do not have an id. A database name is rejected: "
-                "names are not unique, and this load overwrites the table, so the wrong "
-                "target would destroy data. Only parquet is accepted, not CSV or JSON."
+            name=sql_name,
+            description=scoped_description(
+                sql_tool_description(
+                    resolved_search_name if has_search else None,
+                    describe_name if describe_tables else None,
+                    search_table=search_table if has_search else None,
+                    search_column=search_column if has_search else None,
+                    search_route=search_route,
+                    catalogs=catalogs,
+                    max_rows=max_rows,
+                ),
+                scope_label,
             ),
             parse_docstring=True,
         ),
     ]
 
     if management_tools:
-        tools.extend(management)
+        # Names resolved here rather than above, so a suffix too long for one of these
+        # is reported against a tool the caller actually asked for.
+        list_name = suffixed_tool_name(DEFAULT_LIST_DATABASES_TOOL_NAME, tool_name_suffix)
+        create_name = suffixed_tool_name(DEFAULT_CREATE_DATABASE_TOOL_NAME, tool_name_suffix)
+        load_name = suffixed_tool_name(DEFAULT_LOAD_TABLE_TOOL_NAME, tool_name_suffix)
+        tools.extend(
+            [
+                StructuredTool.from_function(
+                    func=hotdata_list_managed_databases,
+                    name=list_name,
+                    description=(
+                        "List the instant databases in this workspace. Returns each database's "
+                        "'id' and its human-readable 'name'. Names are display labels and are "
+                        "not unique — pass the 'id' to other tools, never the name. "
+                        "An id cannot be guessed or built from a name; it only comes from here or "
+                        "from creating a database."
+                    ),
+                ),
+                StructuredTool.from_function(
+                    func=hotdata_create_managed_database,
+                    name=create_name,
+                    description=(
+                        "Create an instant database to hold tables you load. 'name' is a display "
+                        "label only and is not an identifier; the response carries the 'id', which "
+                        "is what every other tool needs — keep it. Declare the tables you intend "
+                        "to load up front as a comma- or newline-separated list, so data loads "
+                        "straight into them."
+                    ),
+                    parse_docstring=True,
+                ),
+                StructuredTool.from_function(
+                    func=hotdata_load_managed_table,
+                    name=load_name,
+                    description=(
+                        "Load a parquet file into a table that was declared on an instant "
+                        "database, replacing whatever the table held. 'file' is either a path on "
+                        "the local filesystem or an http:// or https:// URL, which is downloaded "
+                        f"and uploaded for you{url_rule}. 'database_id' must be a database id "
+                        f"returned by {list_name} or {create_name} — call one of those first if "
+                        "you do not have an id. A database name is rejected: "
+                        "names are not unique, and this load overwrites the table, so the wrong "
+                        "target would destroy data. Only parquet is accepted, not CSV or JSON."
+                    ),
+                    parse_docstring=True,
+                ),
+            ]
+        )
 
     if describe_tables:
         tools.append(
             make_hotdata_describe_tables_tool(
                 client,
                 database_id=database,
+                name=describe_name,
                 column_stats=describe_column_stats,
+                search_capabilities=describe_search_capabilities,
                 catalogs=catalogs,
+                label=scope_label,
             )
         )
 
@@ -575,6 +640,7 @@ def make_hotdata_tools(
                 database_id=database,
                 embedding=search_embedding,
                 route=search_route,
+                label=scope_label,
             )
         )
 

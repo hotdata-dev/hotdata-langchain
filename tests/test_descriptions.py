@@ -336,6 +336,42 @@ def _tool_builds() -> list[tuple[str, dict[str, object]]]:
             "semantic search",
             {"search_table": TABLE, "search_column": COLUMN, "search_strategy": "semantic"},
         ),
+        (
+            "suffixed names",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "sales",
+            },
+        ),
+        (
+            "suffix with a digit",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "f1",
+            },
+        ),
+        (
+            "suffix with an uppercase letter",
+            {
+                "management_tools": True,
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "tool_name_suffix": "Sales",
+            },
+        ),
+        (
+            "suffixed semantic search",
+            {
+                "search_table": TABLE,
+                "search_column": COLUMN,
+                "search_strategy": "semantic",
+                "tool_name_suffix": "sales",
+            },
+        ),
     ]
 
 
@@ -355,7 +391,7 @@ def _built(name: str, kwargs: dict[str, object]) -> list[StructuredTool]:
     the answer in.
     """
     client = MagicMock()
-    if name != "semantic search":
+    if "semantic" not in name:
         return make_hotdata_tools(client, **kwargs)  # type: ignore[arg-type]
 
     database = ManagedDatabase(
@@ -416,7 +452,11 @@ def test_no_description_points_at_a_tool_that_is_not_registered(
     dangling = {
         (tool.name, ref)
         for tool in tools
-        for ref in re.findall(r"hotdata_[a-z_]+", _model_facing(tool))
+        # The class has to be everything TOOL_NAME_PATTERN permits. A narrower one
+        # truncates a suffixed name at the first character it excludes and reports the
+        # prefix as dangling, failing a correct build: `[a-z_]+` did that to
+        # `hotdata_describe_tables_f1`, and `[a-z0-9_-]+` would to `..._Sales`.
+        for ref in re.findall(r"hotdata_[A-Za-z0-9_-]+", _model_facing(tool))
         if ref not in registered
     }
     assert not dangling, f"[{label}] descriptions name unregistered tools: {sorted(dangling)}"

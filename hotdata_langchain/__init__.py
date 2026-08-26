@@ -26,6 +26,7 @@ from hotdata_langchain.errors import (
 )
 from hotdata_langchain.indexes import (
     CAPABILITY_PHRASES,
+    SEARCH_NOUNS,
     SEMANTIC,
     TEXT,
     SearchIndex,
@@ -34,6 +35,7 @@ from hotdata_langchain.indexes import (
     generated_vector_columns,
     indexes_for_column,
     list_search_indexes,
+    search_nouns_by_column,
 )
 from hotdata_langchain.results import (
     CLIENT_WARNING_KEY,
@@ -74,6 +76,7 @@ from hotdata_langchain.tools import (
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
+    suffixed_tool_name,
 )
 from hotdata_langchain.vectorstore import HotdataVectorStore
 
@@ -93,6 +96,7 @@ __all__ = [
     "DISTANCE_FUNCTIONS",
     "RRF_K",
     "SCORE_COLUMN",
+    "SEARCH_NOUNS",
     "SEMANTIC",
     "TEXT",
     "DistanceMetric",
@@ -133,7 +137,9 @@ __all__ = [
     "result_json",
     "result_payload",
     "result_rows_for_llm",
+    "search_nouns_by_column",
     "semantic_search_json",
+    "suffixed_tool_name",
     "vector_distance_sql",
     "vector_search_sql",
     "with_error_feedback",

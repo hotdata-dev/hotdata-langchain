@@ -99,8 +99,10 @@ their verification in [engine-contract.md](./engine-contract.md).
 ### Tier 1 — buildable now, zero blockers (this repo + `sdk-python-framework`)
 
 - [x] **BM25 tool.** Shipped as `hotdata_langchain/search.py` — `hotdata_search_text`, with the
-      corpus pinned at construction (nothing lets an agent discover which columns are indexed,
-      and the engine errors outright when one is missing).
+      corpus pinned at construction (the engine errors outright when the index is missing, so a
+      model choosing its own corpus can pick one that cannot answer). `hotdata_describe_tables`
+      now reports what is searchable; the search tool does not yet take that choice from the
+      agent.
 - [x] **Tool descriptions that carry the engine's contract.** The highest-leverage item found
       so far, and not originally on this list. A 12-token SQL description produced a failed
       run; the contract version produces the correct search-then-SQL path with no system
@@ -197,9 +199,13 @@ Grouped by code surface:
   release rather than shipping two breaking versions.
 - **Retrieval surface** ([#39](https://github.com/hotdata-dev/hotdata-langchain/issues/39)) — **shipped**, both halves: the semantic search tool, and hybrid rank fusion over it and
   BM25 as a single SQL query rather than the client-side fan-out originally planned.
-- **Discovery surface** ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — report which columns are searchable in `hotdata_describe_tables`.
-  Newly unblocked: indexes are invisible to SQL but `IndexesApi.list_indexes` returns them, so
-  this needs no engine change. It is what would let the search corpus stop being pinned.
+- ~~**Discovery surface**~~ ([#40](https://github.com/hotdata-dev/hotdata-langchain/issues/40)) — **done**, both parts. `hotdata_describe_tables` reports each
+  column's `searchable_by`, read from `IndexesApi.list_indexes`, and hides the vector columns a
+  provider-backed index generated; no engine change was needed. `make_hotdata_tools` takes
+  `tool_name_suffix=` so two tool sets no longer both register `hotdata_execute_sql`, and the
+  database-scoped descriptions name their database. What this unlocks is not itself done: the
+  search corpus is still pinned at construction, and un-pinning it is now safe because an agent
+  can read what is searchable rather than guess.
 - ~~**Tool-layer robustness**~~ ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)) — **done.** `with_error_feedback` and `engine_error_message` are
   package API, `make_hotdata_tools(handle_errors=True)` turns the wrapping on, and both the
   sync and async callables are wrapped — the async one is what LangChain actually calls in a

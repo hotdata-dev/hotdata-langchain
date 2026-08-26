@@ -132,9 +132,8 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...")            # includ
 tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=False)  # omitted
 ```
 
-It reads `information_schema` in whichever database the tools are scoped to, so it needs no
-extra permissions. With it turned off, the SQL tool's description tells the agent to query
-`information_schema` directly instead.
+It reads `information_schema` in whichever database the tools are scoped to. With it turned
+off, the SQL tool's description tells the agent to query `information_schema` directly instead.
 
 Each column also reports `non_null`, how many of the table's rows hold a value in it,
 alongside the table's `row_count`:
@@ -158,6 +157,39 @@ table must not scan it.
 A table that is declared on the database but has never been loaded has no columns at all in
 `information_schema`, which reads as a missing table. It is reported as declared and empty
 instead, which is the state a load fixes.
+
+### Which columns can be searched
+
+Indexes are invisible to SQL — there is no `pg_indexes` and no `information_schema.indexes` — so
+without asking the control plane, an agent cannot tell a searchable column from any other text
+column. Describing one table reports what each column can be searched by:
+
+```json
+{
+  "table": "public.listing_corpus",
+  "columns": [
+    {"name": "content", "type": "Utf8View", "searchable_by": ["text relevance"]},
+    {"name": "embedding", "type": "List(Float32)", "searchable_by": ["meaning"]},
+    {"name": "rating", "type": "Float64"}
+  ]
+}
+```
+
+The capability is named, not the index behind it: `text relevance` matches the words a value
+uses, `meaning` matches what it is about. Only indexes the engine reports as ready are named —
+a search against one still building fails, and it fails after the model has committed to that
+route.
+
+Where a vector index was built by an embedding provider over a text column, the engine
+materialises a vector column beside it — building one over `content` produces
+`content_embedding`. That column is real in `information_schema` and is not the agent's to
+query, so it is left out of the description and the text column carries the `meaning`
+capability instead.
+
+This costs one control-plane call per table described, and only on the per-table call: the
+no-argument listing stays index-free, so a wide database is not N calls. Pass
+`describe_search_capabilities=False` to turn it off, which also stops the generated vector
+column being filtered, since nothing then knows it was generated.
 
 ## Calling tools directly
 
@@ -229,9 +261,12 @@ hits = {t.name: t for t in tools}["hotdata_search_text"].invoke(
 ```
 
 Rows come back ranked, each with a `score`. The agent supplies only `query` and an optional
-`k`; the table and column are fixed when you build the tool. That is deliberate — nothing in
-the tool surface lets an agent discover which columns are indexed, and the engine errors
-outright rather than falling back to a scan when a column has no BM25 index.
+`k`; the table and column are fixed when you build the tool. That is deliberate: the engine
+errors outright rather than falling back to a scan when a column has no BM25 index, so a
+model choosing its own corpus can pick one that cannot answer. `hotdata_describe_tables` now
+reports which columns are searchable, which is what a model would need to choose from
+something it read rather than guessed — the search tool has not been changed to accept that
+choice yet.
 
 ### Text or meaning, decided by the index
 
@@ -602,6 +637,43 @@ the same id or record. Passing the record skips the lookup an id costs on each c
 ```python
 print(hl.execute_sql_json(client, "SELECT * FROM orders LIMIT 5", database_id="dbid..."))
 ```
+
+## Giving an agent more than one database
+
+One client can query many databases, so registering several tool sets in one agent works. Each
+set needs a name suffix, or every set registers `hotdata_execute_sql` and the model is handed
+tools it cannot tell apart or address:
+
+```python
+sales = hl.make_hotdata_tools(client, database_id="dbid...", tool_name_suffix="sales")
+support = hl.make_hotdata_tools(
+    client, database_id="dbid...", tool_name_suffix="support", management_tools=False
+)
+
+agent = create_agent(model=your_model, tools=[*sales, *support])
+```
+
+That gives `hotdata_execute_sql_sales` and `hotdata_execute_sql_support`, and every
+cross-reference between descriptions follows — the SQL tool points at the schema tool of its own
+set, not the other's. A suffix must be letters, digits, underscores or hyphens, and the whole
+name has to stay within 64 characters — the shortest tool-name limit among the providers this
+package is used with. Both are checked when you build the set rather than when a provider
+first rejects a call.
+
+Descriptions name their database too, so the model has something to choose on rather than two
+identically-worded tools:
+
+> Works on the 'sales' database. Run a read-only SQL query and return the rows as JSON. …
+
+The name comes from the database record; pass `label=` to override it. A database with no name
+gets no such sentence rather than one naming its id. Only the database-scoped tools carry it —
+the instant-database tools act on the workspace, so naming one database in them would be false.
+
+`management_tools=False` on the extra sets is worth it for the same reason: listing, creating
+and loading databases are workspace-wide, so a second copy of them is redundant surface.
+
+Note that a query cannot reach across databases: `SELECT ... FROM other_db.public.t` from within
+one database's scope fails with `table not found`. Each set queries its own.
 
 ## Controlling result size
 
