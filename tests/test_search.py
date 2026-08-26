@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase, QueryResult
 
 from hotdata_langchain.results import CLIENT_WARNING_KEY
@@ -174,19 +175,27 @@ def test_bm25_search_json_scopes_query_to_database(
     mock_client: MagicMock, search_result: QueryResult, managed_db: ManagedDatabase
 ) -> None:
     mock_client.execute_sql.return_value = search_result
-    bm25_search_json(mock_client, table=TABLE, column=COLUMN, query=QUERY, database=managed_db)
+    bm25_search_json(mock_client, table=TABLE, column=COLUMN, query=QUERY, database_id=managed_db)
     assert mock_client.execute_sql.call_args.kwargs == {"database": managed_db}
 
 
-def test_bm25_search_json_refuses_an_unresolved_database_scope(mock_client: MagicMock) -> None:
-    """A bare string would reach the framework's by-name fallback."""
-    with pytest.raises(TypeError, match="resolve_database_by_id"):
+def test_bm25_search_json_resolves_an_id_and_never_matches_a_name(
+    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    """A string is an id here; the framework's by-name fallback stays out of reach."""
+    bm25_search_json(
+        mock_client, table=TABLE, column=COLUMN, query=QUERY, database_id=managed_db.id
+    )
+    databases_api.return_value.get_database.assert_called_once_with(managed_db.id)
+    mock_client.resolve_managed_database.assert_not_called()
+    assert mock_client.execute_sql.call_args.kwargs == {"database": managed_db}
+
+    databases_api.return_value.get_database.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+    with pytest.raises(KeyError, match="not accepted here"):
         bm25_search_json(
-            mock_client,
-            table=TABLE,
-            column=COLUMN,
-            query=QUERY,
-            database="sf_airbnb",  # type: ignore[arg-type]
+            mock_client, table=TABLE, column=COLUMN, query=QUERY, database_id="sf_airbnb"
         )
 
 

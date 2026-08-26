@@ -98,9 +98,31 @@ def test_query_scope_rejects_an_id_or_name_string() -> None:
         query_scope("dbid000000000000000000000000x")  # type: ignore[arg-type]
 
 
-def test_execute_sql_json_refuses_an_unresolved_scope(mock_client: MagicMock) -> None:
-    with pytest.raises(TypeError, match="resolve_database_by_id"):
-        execute_sql_json(mock_client, "SELECT 1", database="sf_airbnb")  # type: ignore[arg-type]
+def test_execute_sql_json_resolves_an_id_string_before_scoping(
+    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    """The id goes through this package's own resolver, so the scope is a fetched record."""
+    execute_sql_json(mock_client, "SELECT 1", database_id=managed_db.id)
+    databases_api.return_value.get_database.assert_called_once_with(managed_db.id)
+    mock_client.execute_sql.assert_called_once_with("SELECT 1", database=managed_db)
+
+
+def test_execute_sql_json_takes_a_resolved_record_without_a_second_lookup(
+    mock_client: MagicMock, managed_db: ManagedDatabase, databases_api: MagicMock
+) -> None:
+    execute_sql_json(mock_client, "SELECT 1", database_id=managed_db)
+    databases_api.return_value.get_database.assert_not_called()
+    mock_client.execute_sql.assert_called_once_with("SELECT 1", database=managed_db)
+
+
+def test_execute_sql_json_refuses_a_name(mock_client: MagicMock, databases_api: MagicMock) -> None:
+    """A name is not an id, so it 404s here rather than scoping the query elsewhere."""
+    databases_api.return_value.get_database.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+    with pytest.raises(KeyError, match="not accepted here"):
+        execute_sql_json(mock_client, "SELECT 1", database_id="sf_airbnb")
+    mock_client.execute_sql.assert_not_called()
 
 
 # --- factories resolve once --------------------------------------------------------

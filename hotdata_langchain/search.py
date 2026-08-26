@@ -151,7 +151,7 @@ def bm25_search_json(
     k: int = DEFAULT_SEARCH_LIMIT,
     columns: Sequence[str] | None = None,
     max_rows: int = 100,
-    database: ManagedDatabase | None = None,
+    database_id: str | ManagedDatabase | None = None,
     warnings: Sequence[str] = (),
 ) -> str:
     """Run a BM25 search and return ``{"metadata": ..., "rows": [...]}`` as JSON.
@@ -160,8 +160,9 @@ def bm25_search_json(
     agent sees one result shape across every Hotdata tool. Rows arrive ranked by
     ``score`` descending.
 
-    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
-    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+    ``database_id`` takes a database id or an already-resolved ``ManagedDatabase``. A
+    name is not accepted: names are display labels and are not unique, so resolution is by
+    id only. Passing a resolved record skips the per-call lookup an id costs.
 
     ``warnings`` are client-side notes to carry in ``metadata.client_warning`` alongside
     the one this adds when the result is capped at ``max_rows``. That one is phrased for
@@ -169,7 +170,8 @@ def bm25_search_json(
     query is not something this tool's caller can do.
     """
     sql = bm25_search_sql(table=table, column=column, query=query, k=k, columns=columns)
-    result = client.execute_sql(sql, database=query_scope(database))
+    scope = resolve_database_by_id(client, database_id) if database_id is not None else None
+    result = client.execute_sql(sql, database=query_scope(scope))
     return result_json(result, max_rows=max_rows, warnings=warnings, remedy=SEARCH_REMEDY)
 
 
@@ -295,7 +297,7 @@ def semantic_search_json(
     columns: Sequence[str] | None = None,
     metric: DistanceMetric = "cosine",
     max_rows: int = 100,
-    database: ManagedDatabase | None = None,
+    database_id: str | ManagedDatabase | None = None,
     warnings: Sequence[str] = (),
 ) -> str:
     """Run a semantic search and return ``{"metadata": ..., "rows": [...]}`` as JSON.
@@ -326,7 +328,8 @@ def semantic_search_json(
             "these are the nearest matches rather than the whole set, so to reason over a "
             "wider cohort, rank by distance inside SQL and aggregate there"
         )
-    result = client.execute_sql(sql, database=query_scope(database))
+    scope = resolve_database_by_id(client, database_id) if database_id is not None else None
+    result = client.execute_sql(sql, database=query_scope(scope))
     return result_json(result, max_rows=max_rows, warnings=warnings, remedy=remedy)
 
 
@@ -483,7 +486,7 @@ def hybrid_search_json(
     metric: DistanceMetric = "cosine",
     rrf_k: int = RRF_K,
     max_rows: int = 100,
-    database: ManagedDatabase | None = None,
+    database_id: str | ManagedDatabase | None = None,
     warnings: Sequence[str] = (),
 ) -> str:
     """Run a fused search and return ``{"metadata": ..., "rows": [...]}`` as JSON.
@@ -509,7 +512,8 @@ def hybrid_search_json(
         metric=metric,
         rrf_k=rrf_k,
     )
-    result = client.execute_sql(sql, database=query_scope(database))
+    scope = resolve_database_by_id(client, database_id) if database_id is not None else None
+    result = client.execute_sql(sql, database=query_scope(scope))
     return result_json(result, max_rows=max_rows, warnings=warnings, remedy=HYBRID_REMEDY)
 
 
@@ -1219,7 +1223,7 @@ def make_hotdata_search_tool(
                     k=wanted,
                     columns=projection,
                     max_rows=max_rows,
-                    database=database,
+                    database_id=database,
                     warnings=[clamped] if clamped else (),
                 )
             return hybrid_search_json(
@@ -1234,7 +1238,7 @@ def make_hotdata_search_tool(
                 columns=projection,
                 metric=fusion.metric,
                 max_rows=max_rows,
-                database=database,
+                database_id=database,
                 warnings=[clamped] if clamped else (),
             )
 
@@ -1282,7 +1286,7 @@ def make_hotdata_search_tool(
             columns=projection,
             metric=metric,
             max_rows=max_rows,
-            database=database,
+            database_id=database,
             warnings=[clamped] if clamped else (),
         )
 

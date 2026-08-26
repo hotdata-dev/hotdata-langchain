@@ -7,6 +7,7 @@ encodes a real constraint is pinned rather than left free.
 
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -435,3 +436,34 @@ def test_the_model_is_never_shown_the_phrase_managed_table(
         if "managed table" in _model_facing(tool).lower()
     }
     assert not leaked, f"[{label}] these show the model 'managed table': {sorted(leaked)}"
+
+
+def test_the_database_tools_quote_only_keys_their_payload_carries() -> None:
+    """A description naming a key the JSON lacks sends the model hunting for it.
+
+    Both tools return a fixed shape, so every quoted lower-case token in their wording
+    should be a key that shape actually has. The framework record still calls a database's
+    name ``description``; these tools emit ``name``, and the wording has to follow.
+    """
+    quoted = re.compile(r"'([a-z_]+)'")
+    client = MagicMock()
+    client.list_managed_databases.return_value = [
+        ManagedDatabase(id="dbid1", description="sales", default_connection_id="conn1")
+    ]
+    client.create_managed_database.return_value = ManagedDatabase(
+        id="dbid1", description="sales", default_connection_id="conn1"
+    )
+    tools = {t.name: t for t in make_hotdata_tools(client)}
+
+    payloads = {
+        "hotdata_list_managed_databases": json.loads(
+            tools["hotdata_list_managed_databases"].invoke({})
+        )[0],
+        "hotdata_create_managed_database": json.loads(
+            tools["hotdata_create_managed_database"].invoke({"name": "sales"})
+        ),
+    }
+    for name, payload in payloads.items():
+        described = set(quoted.findall(tools[name].description or ""))
+        missing = described - set(payload) - set(tools[name].args)
+        assert not missing, f"{name} quotes {sorted(missing)}, but returns {sorted(payload)}"

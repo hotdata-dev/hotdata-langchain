@@ -117,7 +117,12 @@ def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str
 
 
 def list_managed_databases_json(client: HotdataClient) -> str:
-    rows = [{"description": db.description, "id": db.id} for db in client.list_managed_databases()]
+    """List this workspace's instant databases as JSON, each with its ``id`` and ``name``.
+
+    ``name`` is the API's ``name`` field. ``ManagedDatabase`` still holds it under
+    ``description``, which this package does not surface.
+    """
+    rows = [{"id": db.id, "name": db.description} for db in client.list_managed_databases()]
     return json.dumps(rows, indent=2)
 
 
@@ -329,7 +334,7 @@ def load_managed_table(
 
 
 def managed_database_summary(db: ManagedDatabase) -> dict[str, str]:
-    return {"id": db.id, "description": db.description or db.id}
+    return {"id": db.id, "name": db.description or db.id}
 
 
 def load_result_summary(result: LoadManagedTableResult) -> dict[str, Any]:

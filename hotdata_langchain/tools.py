@@ -254,12 +254,15 @@ def execute_sql_json(
     sql: str,
     *,
     max_rows: int = 100,
-    database: ManagedDatabase | None = None,
+    database_id: str | ManagedDatabase | None = None,
 ) -> str:
-    """Run SQL scoped to an already-resolved instant database and return JSON.
+    """Run SQL scoped to an instant database and return JSON.
 
-    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
-    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+    ``database_id`` takes a database id or an already-resolved ``ManagedDatabase``, and
+    is the same parameter :func:`make_hotdata_tools` takes. A name is not accepted: names
+    are display labels and are not unique, so resolution is by id only. An id costs a
+    lookup per call, which passing the resolved record skips — `make_hotdata_tools`
+    resolves once at construction for exactly that reason.
 
     ``metadata.client_warning`` carries anything this package noticed about a call that
     succeeded without doing what it said: rows capped at ``max_rows``, or a date/time
@@ -273,8 +276,9 @@ def execute_sql_json(
     error occurred", so the model has only this to work from.
     """
     warnings = format_pattern_warnings(sql)
+    scope = resolve_database_by_id(client, database_id) if database_id is not None else None
     try:
-        result = client.execute_sql(sql, database=query_scope(database))
+        result = client.execute_sql(sql, database=query_scope(scope))
     except Exception as exc:
         if not warnings:
             raise
@@ -398,7 +402,7 @@ def make_hotdata_tools(
             sql: one read-only DataFusion SQL statement. Rows are capped, so read
                 metadata.row_count for the total the query matched before that cap.
         """
-        return execute_sql_json(client, sql, max_rows=max_rows, database=database)
+        return execute_sql_json(client, sql, max_rows=max_rows, database_id=database)
 
     def hotdata_list_managed_databases() -> str:
         """List Hotdata instant databases in the workspace."""
@@ -508,8 +512,8 @@ def make_hotdata_tools(
             name=DEFAULT_LIST_DATABASES_TOOL_NAME,
             description=(
                 "List the instant databases in this workspace. Returns each database's "
-                "'id' and its human-readable 'description'. Names are display labels and "
-                "are not unique — pass the 'id' to other tools, never the description. "
+                "'id' and its human-readable 'name'. Names are display labels and are "
+                "not unique — pass the 'id' to other tools, never the name. "
                 "An id cannot be guessed or built from a name; it only comes from here or "
                 "from creating a database."
             ),

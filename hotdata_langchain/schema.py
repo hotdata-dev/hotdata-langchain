@@ -198,7 +198,7 @@ def describe_tables_json(
     client: HotdataClient,
     *,
     table: str | None = None,
-    database: ManagedDatabase | None = None,
+    database_id: str | ManagedDatabase | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
     column_stats: bool = True,
 ) -> str:
@@ -220,13 +220,15 @@ def describe_tables_json(
     columns at all, which reads as a missing table. It is reported as declared and
     empty instead.
 
-    ``database`` is a resolved ``ManagedDatabase``, not an id or a name — resolve one
-    with :func:`hotdata_langchain.databases.resolve_database_by_id`.
+    ``database_id`` takes a database id or an already-resolved ``ManagedDatabase``. A
+    name is not accepted: names are display labels and are not unique, so resolution is by
+    id only. Passing a resolved record skips the per-call lookup an id costs.
 
     Raises ``ValueError`` for a non-positive ``max_columns``.
     """
     if max_columns < 1:
         raise ValueError(f"max_columns must be >= 1, got {max_columns}")
+    database = resolve_database_by_id(client, database_id) if database_id is not None else None
     scope = query_scope(database)
     if table is None:
         result = client.execute_sql(table_overview_sql(), database=scope)
@@ -370,7 +372,7 @@ def make_hotdata_describe_tables_tool(
         return describe_tables_json(
             client,
             table=table,
-            database=database,
+            database_id=database,
             max_columns=max_columns,
             column_stats=column_stats,
         )

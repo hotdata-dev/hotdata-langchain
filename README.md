@@ -8,6 +8,13 @@ Connect [LangChain](https://python.langchain.com/) to [Hotdata](https://hotdata.
 pip install hotdata-langchain
 ```
 
+To run the agent quickstart below, install the `agents` extra as well — it adds the
+`langchain` package that `create_agent` lives in:
+
+```bash
+pip install "hotdata-langchain[agents]"
+```
+
 ## Authentication
 
 Set `HOTDATA_API_KEY` in your environment. Optionally set `HOTDATA_WORKSPACE` to pin a specific workspace (the first available workspace is used if unset).
@@ -15,9 +22,9 @@ Set `HOTDATA_API_KEY` in your environment. Optionally set `HOTDATA_WORKSPACE` to
 ## Quickstart
 
 Of the LangChain packages, this one needs only `langchain-core`, and works with any
-tool-calling model. Running an agent additionally needs the `langchain` package and the
-integration for whichever model provider you use; using `HotdataVectorStore` needs an
-embedding provider's integration, such as `langchain-openai`.
+tool-calling model. Running an agent additionally needs the `langchain` package — the
+`agents` extra above — plus the integration for whichever model provider you use; using
+`HotdataVectorStore` needs an embedding provider's integration, such as `langchain-openai`.
 
 ```python
 from langchain.agents import create_agent
@@ -583,8 +590,17 @@ agent's first query, and no query pays a repeat lookup. If you already hold a
 instead of its id to skip the lookup entirely:
 
 ```python
-db = client.create_managed_database(description="sales", schema="public", tables=["orders"])
+db = hl.create_managed_database(client, name="sales", schema="public", tables=["orders"])
 tools = hl.make_hotdata_tools(client, database_id=db)
+```
+
+Every helper that runs a query takes the same `database_id=` — `hl.execute_sql_json`,
+`hl.bm25_search_json`, `hl.semantic_search_json`, `hl.hybrid_search_json` and
+`hl.describe_tables_json` — so working outside the tool layer scopes the same way and accepts
+the same id or record. Passing the record skips the lookup an id costs on each call:
+
+```python
+print(hl.execute_sql_json(client, "SELECT * FROM orders LIMIT 5", database_id="dbid..."))
 ```
 
 ## Controlling result size

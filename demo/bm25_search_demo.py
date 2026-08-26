@@ -128,7 +128,9 @@ def load_listings(client: hl.HotdataClient, db: Any, parquet: Path) -> None:
 
 def table_columns(client: hl.HotdataClient, db: Any) -> list[str]:
     """Return the table's column names, through the same tool the agent gets."""
-    described = json.loads(hl.describe_tables_json(client, table=f"{SCHEMA}.{TABLE}", database=db))
+    described = json.loads(
+        hl.describe_tables_json(client, table=f"{SCHEMA}.{TABLE}", database_id=db)
+    )
     return [column["name"] for column in described["columns"]]
 
 

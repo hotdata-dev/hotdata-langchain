@@ -14,6 +14,8 @@ _RUNTIME_SUBMODULE = re.compile(
     r"(?m)^\s*(?:from\s+hotdata_framework\.(client|env|result|health)\s+import"
     r"|import\s+hotdata_framework\.(client|env|result|health)(?:\s|$|,|as))"
 )
+# `langchain`, but not `langchain_core` or any other langchain_* distribution.
+_LANGCHAIN_IMPORT = re.compile(r"(?m)^\s*(?:from|import)\s+langchain(?=[.\s,]|$)")
 
 
 def test_version_is_pep440_core():
@@ -39,3 +41,23 @@ def test_source_uses_hotdata_framework_root_imports():
         "Use `from hotdata_framework import ...` in package source; "
         f"found submodule imports in: {', '.join(violations)}"
     )
+
+
+def test_source_imports_only_langchain_core() -> None:
+    """`langchain` is an extra, which only holds while nothing in the runtime imports it."""
+    violations = [
+        str(path.relative_to(REPO_ROOT))
+        for path in SOURCE_ROOT.rglob("*.py")
+        if _LANGCHAIN_IMPORT.search(path.read_text(encoding="utf-8"))
+    ]
+    assert not violations, (
+        "package source imports `langchain`, which a bare install does not provide; "
+        f"either use `langchain_core` or promote the extra to a dependency: {violations}"
+    )
+
+
+def test_the_agents_extra_provides_the_package_create_agent_lives_in() -> None:
+    tomllib = pytest.importorskip("tomllib")
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = pyproject["project"]["optional-dependencies"]
+    assert any(req.startswith("langchain>") for req in extras["agents"]), extras

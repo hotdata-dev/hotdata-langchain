@@ -17,6 +17,10 @@ dependencies = [
   "pyarrow>=15",
 ]
 
+[project.optional-dependencies]
+# The runtime needs only langchain-core; `create_agent` lives in `langchain`.
+agents = ["langchain>=1.0"]
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",
