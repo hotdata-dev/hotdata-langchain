@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `pip install hotdata-langchain` now has a form that provides everything the documented
+  quickstart imports: `pip install "hotdata-langchain[agents]"`. The runtime needs only
+  `langchain-core`, which is what a LangChain integration should depend on, but `create_agent`
+  lives in `langchain` — so a clean install followed by the quickstart's first import raised
+  `ModuleNotFoundError: No module named 'langchain'`. Found by an audit that ran every code
+  block on the published docs page from a clean environment against production.
+- `execute_sql_json` takes `database_id=`, the same name and the same
+  `str | ManagedDatabase` that `make_hotdata_tools` takes. It took `database=` and accepted
+  only an already-resolved record, so the id used everywhere else raised
+  `TypeError: database must be a resolved ManagedDatabase, got str`, pointing at a resolution
+  step no example named. The guard was stricter than its own reason: it existed to keep a name
+  away from the framework's by-name resolver, and this package's own `resolve_database_by_id`
+  is by id only. Resolution is still by id — a name raises `KeyError` rather than matching a
+  non-unique display label.
+- `hotdata_list_managed_databases` returns each database's `name`. It returned `description`,
+  which the v1 API's database responses do not carry at all: `DatabaseSummary` and
+  `DatabaseDetailResponse` have only `name`, and `description` survives just as an accepted
+  input alias on `CreateDatabaseRequest`. `create_managed_database` already took `name=`, so
+  the package named one field two ways depending on the direction it was travelling.
+
+### Changed
+
+- **Breaking, for callers using these two directly.** `execute_sql_json(..., database=db)` is
+  now `execute_sql_json(..., database_id=db)`, and `hotdata_list_managed_databases` emits
+  `name` where it emitted `description`. Both raise rather than degrading quietly — an
+  unexpected keyword, and a `KeyError` on the old key. The tools an agent sees are otherwise
+  unchanged, apart from the list tool's description, which now quotes `name` to match what it
+  returns. `ManagedDatabase.description` is a `hotdata-framework` field and is untouched here.
+
 ## [0.12.0] - 2026-08-25
 
 ### Fixed

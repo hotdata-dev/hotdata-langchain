@@ -285,6 +285,11 @@ dependencies = [
     { name = "pyarrow" },
 ]
 
+[package.optional-dependencies]
+agents = [
+    { name = "langchain" },
+]
+
 [package.dev-dependencies]
 demo = [
     { name = "langchain" },
@@ -302,10 +307,12 @@ dev = [
 requires-dist = [
     { name = "hotdata", specifier = ">=0.8.0" },
     { name = "hotdata-framework", specifier = ">=0.10.0" },
+    { name = "langchain", marker = "extra == 'agents'", specifier = ">=1.0" },
     { name = "langchain-core", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=15" },
 ]
+provides-extras = ["agents"]
 
 [package.metadata.requires-dev]
 demo = [
