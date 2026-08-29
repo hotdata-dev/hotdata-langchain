@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`searchable_columns=` on `make_hotdata_tools`, so the SQL tool can name every indexed
+  column rather than only the one the search tool ranks.** Takes `(table, column)` pairs written
+  `catalog.schema.table`, confirms each against the control plane when the tools are built, and
+  drops with a warning any a ready index does not cover. Every confirmed column gets its own
+  worked `bm25_search(...)` (or `vector_search(...)`) call in the description. Order carries:
+  the first is the one a model reaches for most, so lead with the table most questions are
+  about. `SearchableColumn` and `verify_searchable_columns` are exported for callers assembling
+  descriptions themselves.
+
+### Fixed
+
+- **The SQL tool no longer claims the registered column is the *only* indexed one.** It said
+  "the BM25-indexed column is `<column>` on `<table>`" on the strength of what the caller had
+  wired to the search tool, which is a statement about one tool's configuration and not about
+  the database. On any database indexing more than one column that sentence was false, and it
+  was measured being followed in preference to what `hotdata_describe_tables` reports — so the
+  model searched a table the answer was not about and returned a confident, wrong number. It now
+  says that column *has* an index, which is what the caller actually told us.
+
+  Measured across 84 runs on one model (`gpt-5.1`), one dataset and one question, asking an
+  aggregate whose numbers lived on a table other than the registered corpus. With the corpus
+  named alone the model searched the right table in 0 runs of 12; declaring the other column
+  through `searchable_columns=` took that to 7 of 12 (Fisher exact p = 0.005). Composition rose
+  7 of 12 to 10 and the `ILIKE` fallback fell 4 of 12 to 2, but neither is significant at this
+  sample size (p = 0.37 and p = 0.64) — read them as direction, not as result.
+
+  Three things this does *not* fix. Naming a column without giving it its own worked call moved
+  almost nothing (2 of 12). The gain is much weaker without a prior `hotdata_describe_tables`
+  call in the thread, which is the likelier shape of a single-question session (2 of 6 cold
+  against 5 of 6 warm). And the cohort size a model asks for is still an arbitrary `k`, so the
+  answers themselves remain wrong for a different reason — 0 of 84 runs across every wording
+  produced the correct figure ([#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62)).
+
 ## [0.13.0] - 2026-08-26
 
 ### Added

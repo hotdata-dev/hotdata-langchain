@@ -204,8 +204,17 @@ Grouped by code surface:
   provider-backed index generated; no engine change was needed. `make_hotdata_tools` takes
   `tool_name_suffix=` so two tool sets no longer both register `hotdata_execute_sql`, and the
   database-scoped descriptions name their database. What this unlocks is not itself done: the
-  search corpus is still pinned at construction, and un-pinning it is now safe because an agent
-  can read what is searchable rather than guess.
+  search corpus is still pinned at construction, and un-pinning it is now *expressible* because
+  an agent can read what is searchable rather than guess.
+
+  Whether an agent would act on that is a separate question, and it has since been measured
+  answering no. Across 24 runs on one model, `searchable_by` never once moved which table the
+  agent searched, including runs where the annotation was already in the thread from an earlier
+  describe call and the agent then wrote `ILIKE` against the very column it said was searchable.
+  What moved the choice was a worked call in the SQL tool's description naming that column, so
+  the discovery surface is true information that nothing consumes on its own. Read the finding
+  before designing anything that assumes an agent will look it up:
+  [#73](https://github.com/hotdata-dev/hotdata-langchain/issues/73).
 - ~~**Tool-layer robustness**~~ ([#41](https://github.com/hotdata-dev/hotdata-langchain/issues/41)) — **done.** `with_error_feedback` and `engine_error_message` are
   package API, `make_hotdata_tools(handle_errors=True)` turns the wrapping on, and both the
   sync and async callables are wrapped — the async one is what LangChain actually calls in a

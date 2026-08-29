@@ -908,7 +908,7 @@ def test_the_semantic_tool_and_the_sql_tool_agree_about_composing(
     described = {tool.name: tool.description or "" for tool in tools}
     sql = described["hotdata_execute_sql"]
     search = described["hotdata_search_semantic"]
-    assert "not available in SQL" in sql
+    assert f"Ranking '{COLUMN}' on {TABLE} by meaning needs the query as a vector" in sql
     assert "rank inside SQL instead" not in search
 
 

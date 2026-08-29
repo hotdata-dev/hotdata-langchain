@@ -29,6 +29,7 @@ from hotdata_langchain.indexes import (
     SEARCH_NOUNS,
     SEMANTIC,
     TEXT,
+    SearchableColumn,
     SearchIndex,
     capabilities_by_column,
     fusable_vector_indexes,
@@ -36,6 +37,7 @@ from hotdata_langchain.indexes import (
     indexes_for_column,
     list_search_indexes,
     search_nouns_by_column,
+    verify_searchable_columns,
 )
 from hotdata_langchain.results import (
     CLIENT_WARNING_KEY,
@@ -109,6 +111,7 @@ __all__ = [
     "SearchIndex",
     "SearchRoute",
     "SearchStrategy",
+    "SearchableColumn",
     "__version__",
     "bm25_search_json",
     "bm25_search_sql",
@@ -142,5 +145,6 @@ __all__ = [
     "suffixed_tool_name",
     "vector_distance_sql",
     "vector_search_sql",
+    "verify_searchable_columns",
     "with_error_feedback",
 ]

@@ -245,6 +245,92 @@ def generated_vector_columns(indexes: Sequence[SearchIndex]) -> Iterator[str]:
             yield index.vector_column
 
 
+@dataclass(frozen=True)
+class SearchableColumn:
+    """One column a ready index covers, carrying the table reference to name it by.
+
+    :class:`SearchIndex` describes an index within a table already known to the caller.
+    This pairs one with the three-part reference a query has to write, which is what a
+    tool description needs and what the index record does not carry.
+    """
+
+    table: str
+    index: SearchIndex
+
+    @property
+    def column(self) -> str:
+        return self.index.column
+
+    @property
+    def kind(self) -> SearchKind:
+        return self.index.kind
+
+    @property
+    def function(self) -> str:
+        """Return the table function this column is searched through."""
+        return "vector_search" if self.index.kind == SEMANTIC else "bm25_search"
+
+    @property
+    def composable(self) -> bool:
+        """Report whether a query against this column can be written in SQL.
+
+        False for a plain vector index, whose query has to arrive as a vector.
+        """
+        return self.index.kind == TEXT or self.index.embeds_query
+
+
+def verify_searchable_columns(
+    client: HotdataClient,
+    *,
+    columns: Sequence[tuple[str, str]],
+    database: ManagedDatabase | None,
+) -> list[SearchableColumn]:
+    """Return the declared ``(table, column)`` pairs a ready index actually covers.
+
+    Declared rather than discovered, and then confirmed rather than trusted. Naming a
+    column a model can search is a claim about the database, and this package states one
+    only after reading it back — the same stance :func:`query_catalogs` takes towards the
+    catalog name. A pair no index covers is dropped with a warning rather than named,
+    because BM25 has no brute-force fallback and a search against an unindexed column is
+    a hard error at the point the model has already committed to the route.
+
+    One control-plane call per distinct table, not per declared column. Order is the
+    caller's, and it is preserved: a description that names several columns leads with
+    the first, which is the one a model was measured reaching for most.
+
+    Returns an empty list without ``database``, which is the scope every index listing
+    needs. Duplicated pairs are named once.
+    """
+    if database is None:
+        return []
+    listed: dict[str, list[SearchIndex]] = {}
+    found: list[SearchableColumn] = []
+    seen: set[tuple[str, str]] = set()
+    for table, column in columns:
+        if (table, column) in seen:
+            continue
+        seen.add((table, column))
+        parts = table.split(".")
+        if len(parts) != 3:
+            raise ValueError(
+                f"a searchable column's table must be written catalog.schema.table, got {table!r}"
+            )
+        if table not in listed:
+            listed[table] = list_search_indexes(
+                client, table=parts[2], schema=parts[1], database=database
+            )
+        covering = indexes_for_column(listed[table], column)
+        if not covering:
+            logger.warning(
+                "no ready search index was found covering %r on %s; not naming it as searchable",
+                column,
+                table,
+            )
+            continue
+        found.append(SearchableColumn(table, covering[0]))
+    return found
+
+
 def fusable_vector_indexes(indexes: Sequence[SearchIndex]) -> list[SearchIndex]:
     """Return the plain vector indexes among ``indexes``, in listing order.
 

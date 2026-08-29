@@ -111,6 +111,15 @@ Returns the table's columns plus a trailing `score` (Float32). Four properties s
   default. Correctness is unaffected (explicit-`k` and trailing-`LIMIT` returned identical
   top-3), and at 7.5k rows the cost was not measurable (40 ms vs 38 ms median), so this is a
   scan-bound difference rather than an observed slowdown. Passing `k` explicitly is free, so we do.
+- **Omitting the limit caps the result at 1,000, silently** (verified 2026-08-29). The fourth
+  argument is optional, and leaving it off is not "give me every match": on
+  `default.public.listings.description`, `'quiet garden'` matched 1,426 rows and the unbounded
+  call returned exactly 1,000. Below that ceiling the two agree — `'garden'` returned 555 either
+  way, and the 500-row corpus returned its whole 171-row pool — so the truncation shows up only
+  on the pools large enough to matter, and nothing in the result marks it. There is therefore no
+  way to ask for a whole match pool without already knowing its size, which is what makes an
+  aggregate over a relevance-defined cohort a two-step operation rather than one query. Tracked
+  as [#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62).
 - **The index is a hard prerequisite.** No brute-force fallback: a column without a BM25 index
   gives `No BM25 index found on column 'name' for <conn>.public.listings`. This differs from
   vector search, where the *explicit-vector* scalar UDFs (`cosine_distance(col, ARRAY[...])`)

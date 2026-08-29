@@ -264,9 +264,12 @@ Rows come back ranked, each with a `score`. The agent supplies only `query` and 
 `k`; the table and column are fixed when you build the tool. That is deliberate: the engine
 errors outright rather than falling back to a scan when a column has no BM25 index, so a
 model choosing its own corpus can pick one that cannot answer. `hotdata_describe_tables` now
-reports which columns are searchable, which is what a model would need to choose from
-something it read rather than guessed — the search tool has not been changed to accept that
-choice yet.
+reports which columns are searchable, which is what a model would need to choose from something
+it read rather than guessed. The search tool has not been changed to accept that choice, and the
+annotation on its own was measured not to change what a model searches: over 24 runs it never
+moved the table chosen, including runs where the model had already read it and then matched with
+`ILIKE` on that same column. What moved the choice was naming the column in a worked call, which
+is what `searchable_columns=` below does.
 
 ### Text or meaning, decided by the index
 
@@ -358,6 +361,39 @@ Write all three parts either way: a two-part `schema.table` reference resolves a
 same rows, but the engine matches its index lookup on the reference as written, so the short
 form can quietly forfeit an index. `HotdataVectorStore` and the search tool emit the full form
 themselves.
+
+### Telling the model about the other indexed columns
+
+`search_table`/`search_column` describe the corpus the *search tool* ranks over. A database
+usually indexes more than one column, and the SQL tool's description is the only place a model
+learns the others exist — so name them:
+
+```python
+tools = hl.make_hotdata_tools(
+    client,
+    database_id="dbid...",
+    search_table="default.public.listing_corpus",   # what the search tool ranks
+    search_column="content",
+    searchable_columns=[                            # what SQL can also rank
+        ("default.public.listings", "description"),
+    ],
+)
+```
+
+Each pair is confirmed against the control plane when the tools are built, and one no ready
+index covers is dropped with a warning rather than named — BM25 has no brute-force fallback, so
+a column offered wrongly is a hard error at the point the model has already committed to the
+route. Every confirmed column gets its own worked call in the description.
+
+**Order carries.** A model writes the call it is shown and largely ignores columns it is only
+told about: over 84 runs on one model, one dataset and one question, naming a second indexed
+column moved the table it searched in 2 runs of 12, while giving that column its own worked call
+moved it in 8. So put the table most questions are about first.
+
+This narrows the failure rather than removing it. The right table depends on the question and a
+description is written once, so declaring the fact table took the right-table rate from 0 of 12
+to 7 of 12 (Fisher exact p = 0.005) rather than to 12 of 12 — and most of that gain needs a
+`hotdata_describe_tables` call earlier in the thread (5 of 6 with one, 2 of 6 without).
 
 For more than one searchable corpus, build the tools yourself and give each a distinct name
 and description — the agent then routes on the descriptions:
