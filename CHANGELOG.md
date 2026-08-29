@@ -28,14 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model searched a table the answer was not about and returned a confident, wrong number. It now
   says that column *has* an index, which is what the caller actually told us.
 
-  Measured across 84 runs on one model and one dataset, asking an aggregate question whose
-  numbers lived on a table other than the registered corpus. With the corpus named alone the
-  model searched the right table in 0 runs of 12. Declaring the other column through
-  `searchable_columns=` took that to 7 of 12, composition from 7 of 12 to 10, and the `ILIKE`
-  fallback from 4 of 12 to 2. Two things this does *not* fix, both measured: naming a column
-  without giving it its own worked call moved almost nothing (2 of 12), and the cohort size a
-  model asks for is still an arbitrary `k`, so the answers remain wrong for a different reason
-  ([#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62)).
+  Measured across 84 runs on one model (`gpt-5.1`), one dataset and one question, asking an
+  aggregate whose numbers lived on a table other than the registered corpus. With the corpus
+  named alone the model searched the right table in 0 runs of 12; declaring the other column
+  through `searchable_columns=` took that to 7 of 12 (Fisher exact p = 0.005). Composition rose
+  7 of 12 to 10 and the `ILIKE` fallback fell 4 of 12 to 2, but neither is significant at this
+  sample size (p = 0.37 and p = 0.64) — read them as direction, not as result.
+
+  Three things this does *not* fix. Naming a column without giving it its own worked call moved
+  almost nothing (2 of 12). The gain is much weaker without a prior `hotdata_describe_tables`
+  call in the thread, which is the likelier shape of a single-question session (2 of 6 cold
+  against 5 of 6 warm). And the cohort size a model asks for is still an arbitrary `k`, so the
+  answers themselves remain wrong for a different reason — 0 of 84 runs across every wording
+  produced the correct figure ([#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62)).
 
 ## [0.13.0] - 2026-08-26
 

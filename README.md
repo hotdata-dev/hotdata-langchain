@@ -386,12 +386,14 @@ a column offered wrongly is a hard error at the point the model has already comm
 route. Every confirmed column gets its own worked call in the description.
 
 **Order carries.** A model writes the call it is shown and largely ignores columns it is only
-told about: over 84 runs on one model and one dataset, naming a second indexed column moved the
-table it searched in 2 runs of 12, while giving that column its own worked call moved it in 8.
-So put the table most questions are about first. This narrows the failure rather than removing
-it — the right table depends on the question, and a description is written once — but with the
-fact table declared, composing rose from 7 runs of 12 to 10 and the `ILIKE` fallback fell from 4
-to 2.
+told about: over 84 runs on one model, one dataset and one question, naming a second indexed
+column moved the table it searched in 2 runs of 12, while giving that column its own worked call
+moved it in 8. So put the table most questions are about first.
+
+This narrows the failure rather than removing it. The right table depends on the question and a
+description is written once, so declaring the fact table took the right-table rate from 0 of 12
+to 7 of 12 (Fisher exact p = 0.005) rather than to 12 of 12 — and most of that gain needs a
+`hotdata_describe_tables` call earlier in the thread (5 of 6 with one, 2 of 6 without).
 
 For more than one searchable corpus, build the tools yourself and give each a distinct name
 and description — the agent then routes on the descriptions:

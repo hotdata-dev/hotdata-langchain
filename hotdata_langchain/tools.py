@@ -135,12 +135,13 @@ def sql_tool_description(
 
     ``also_searchable`` names the other columns a caller has had confirmed, each with its
     own worked call. Which one a model picks tracks which call the description shows it,
-    so the order is the caller's and the first is the one it reaches for most. This does
-    not settle the choice: naming several columns was measured raising how often the
-    model composes at all — 4 runs of 6 to 6 of 6, with the substring fallback going 2 of
-    6 to 0 — while the table it chose still followed the leading example. A description
-    is written once and the right table depends on the question, so this narrows the
-    failure rather than removing it.
+    so the order is the caller's and the first is the one it reaches for most. This
+    narrows the failure rather than removing it: the table a model chose still followed
+    the leading example, and a description is written once while the right table depends
+    on the question. Declaring the table an aggregate question was about moved the
+    right-table rate from 0 runs of 12 to 7 (p = 0.005); the rest of what was observed —
+    more composing, less substring matching — did not reach significance at that sample
+    size and should not be quoted as an effect.
 
     ``search_route`` says which function that column is reachable through, and the
     paragraph is rewritten around it. The two descriptions arrive in one prompt, so a SQL
