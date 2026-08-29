@@ -776,3 +776,12 @@ question with a stock LangChain retrieval chain over `HotdataVectorStore`.
 uv sync --locked
 uv run pytest
 ```
+
+CI runs the suite on Python 3.10 through 3.14, and gates three more checks that a change has
+to pass:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+```
