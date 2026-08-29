@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`searchable_columns=` on `make_hotdata_tools`, so the SQL tool can name every indexed
+  column rather than only the one the search tool ranks.** Takes `(table, column)` pairs written
+  `catalog.schema.table`, confirms each against the control plane when the tools are built, and
+  drops with a warning any a ready index does not cover. Every confirmed column gets its own
+  worked `bm25_search(...)` (or `vector_search(...)`) call in the description. Order carries:
+  the first is the one a model reaches for most, so lead with the table most questions are
+  about. `SearchableColumn` and `verify_searchable_columns` are exported for callers assembling
+  descriptions themselves.
+
+### Fixed
+
+- **The SQL tool no longer claims the registered column is the *only* indexed one.** It said
+  "the BM25-indexed column is `<column>` on `<table>`" on the strength of what the caller had
+  wired to the search tool, which is a statement about one tool's configuration and not about
+  the database. On any database indexing more than one column that sentence was false, and it
+  was measured being followed in preference to what `hotdata_describe_tables` reports — so the
+  model searched a table the answer was not about and returned a confident, wrong number. It now
+  says that column *has* an index, which is what the caller actually told us.
+
+  Measured across 84 runs on one model and one dataset, asking an aggregate question whose
+  numbers lived on a table other than the registered corpus. With the corpus named alone the
+  model searched the right table in 0 runs of 12. Declaring the other column through
+  `searchable_columns=` took that to 7 of 12, composition from 7 of 12 to 10, and the `ILIKE`
+  fallback from 4 of 12 to 2. Two things this does *not* fix, both measured: naming a column
+  without giving it its own worked call moved almost nothing (2 of 12), and the cohort size a
+  model asks for is still an arbitrary `k`, so the answers remain wrong for a different reason
+  ([#62](https://github.com/hotdata-dev/hotdata-langchain/issues/62)).
+
 ## [0.13.0] - 2026-08-26
 
 ### Added

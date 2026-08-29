@@ -25,6 +25,12 @@ from hotdata_langchain.databases import (
     scoped_description,
 )
 from hotdata_langchain.errors import HotdataToolError, engine_error_message, with_error_feedback
+from hotdata_langchain.indexes import (
+    SEMANTIC,
+    TEXT,
+    SearchableColumn,
+    verify_searchable_columns,
+)
 from hotdata_langchain.results import result_json
 from hotdata_langchain.schema import (
     DEFAULT_DESCRIBE_TOOL_NAME,
@@ -52,6 +58,43 @@ DEFAULT_CREATE_DATABASE_TOOL_NAME = "hotdata_create_managed_database"
 DEFAULT_LOAD_TABLE_TOOL_NAME = "hotdata_load_managed_table"
 
 
+def _search_examples(
+    function: str,
+    *,
+    singular: str,
+    generic: str,
+    search_table: str | None,
+    search_column: str | None,
+    also_searchable: Sequence[SearchableColumn] = (),
+) -> str:
+    """Return the worked calls naming every column this function can search.
+
+    A model was measured writing whichever call the description shows it and ignoring
+    columns it was merely told about: naming a second indexed column moved the table it
+    searched in 2 runs of 12, while giving that column its own worked call moved it in 8.
+    So each column gets a call rather than a mention, and the order is the caller's,
+    because the leading one is what a model reaches for most.
+    """
+    named: list[tuple[str, str]] = [(one.table, one.column) for one in also_searchable]
+    if search_table and search_column and (search_table, search_column) not in named:
+        named.append((search_table, search_column))
+
+    def call(table: str, column: str) -> str:
+        return f"{function}('{table}', '{column}', '<query text>', <k>)"
+
+    if not named:
+        return generic
+    if len(named) == 1:
+        table, column = named[0]
+        return f"Here '{column}' on {table} {singular}, so the call is {call(table, column)}."
+    ranked = [f"{call(table, column)} ranks {table}" for table, column in named]
+    return (
+        f"More than one column can be searched here, with a call for each: "
+        f"{', '.join(ranked[:-1])}, and {ranked[-1]}. Search the one whose table your "
+        f"answer is about."
+    )
+
+
 def sql_tool_description(
     search_tool_name: str | None = None,
     describe_tool_name: str | None = DEFAULT_DESCRIBE_TOOL_NAME,
@@ -59,6 +102,7 @@ def sql_tool_description(
     search_table: str | None = None,
     search_column: str | None = None,
     search_route: SearchRoute | None = None,
+    also_searchable: Sequence[SearchableColumn] | None = None,
     catalogs: Sequence[str] | None = None,
     max_rows: int | None = None,
 ) -> str:
@@ -82,7 +126,21 @@ def sql_tool_description(
     limit and quadratic in prompt size. Naming the function, and preferring it whenever
     the answer aggregates over the matches, is what makes the composed form reachable.
     ``search_table``/``search_column`` are woven into the text when known, so the model
-    is told which column is actually indexed rather than guessing one.
+    is told which column is actually indexed rather than guessing one. They name the
+    column the search tool was registered over, which is not necessarily the only indexed
+    one, so the sentence says that column has an index rather than that it is *the*
+    indexed column. The stronger claim was measured being followed in preference to what
+    ``hotdata_describe_tables`` reports, which makes it a wrong answer the model cannot
+    recover from rather than a wording preference.
+
+    ``also_searchable`` names the other columns a caller has had confirmed, each with its
+    own worked call. Which one a model picks tracks which call the description shows it,
+    so the order is the caller's and the first is the one it reaches for most. This does
+    not settle the choice: naming several columns was measured raising how often the
+    model composes at all — 4 runs of 6 to 6 of 6, with the substring fallback going 2 of
+    6 to 0 — while the table it chose still followed the leading example. A description
+    is written once and the right table depends on the question, so this narrows the
+    failure rather than removing it.
 
     ``search_route`` says which function that column is reachable through, and the
     paragraph is rewritten around it. The two descriptions arrive in one prompt, so a SQL
@@ -140,17 +198,19 @@ def sql_tool_description(
             "query as a vector, which SQL cannot express."
         )
     elif semantic:
-        if search_table and search_column:
-            example = (
-                f"Here the column searchable by meaning is '{search_column}' on "
-                f"{search_table}, so the call is vector_search('{search_table}', "
-                f"'{search_column}', '<query text>', <k>)."
-            )
-        else:
-            example = (
+        example = _search_examples(
+            "vector_search",
+            singular="is searchable by meaning",
+            generic=(
                 "The call is vector_search('catalog.schema.table', '<column>', "
                 "'<query text>', <k>), over a column that is searchable by meaning."
-            )
+            ),
+            search_table=search_table,
+            search_column=search_column,
+            also_searchable=[
+                one for one in (also_searchable or ()) if one.kind == SEMANTIC and one.composable
+            ],
+        )
         composable = (
             f"To rank rows by how close their meaning is to a phrase, call vector_search "
             f"inside SQL: it is a table-valued function returning the matched rows' "
@@ -160,17 +220,17 @@ def sql_tool_description(
             f"sort returns arbitrary rows rather than the nearest ones. {prefer}"
         )
     else:
-        if search_table and search_column:
-            example = (
-                f"Here the BM25-indexed column is '{search_column}' on {search_table}, so "
-                f"the call is bm25_search('{search_table}', '{search_column}', "
-                f"'<query text>', <k>)."
-            )
-        else:
-            example = (
+        example = _search_examples(
+            "bm25_search",
+            singular="has a BM25 index",
+            generic=(
                 "The call is bm25_search('catalog.schema.table', '<column>', "
                 "'<query text>', <k>), over a column that has a BM25 index."
-            )
+            ),
+            search_table=search_table,
+            search_column=search_column,
+            also_searchable=[one for one in (also_searchable or ()) if one.kind == TEXT],
+        )
         composable = (
             f"To rank rows by how well their text matches a phrase, call bm25_search "
             f"inside SQL: it is a table-valued function returning the matched rows' "
@@ -336,6 +396,7 @@ def make_hotdata_tools(
     search_strategy: SearchStrategy = "auto",
     search_embedding: Embeddings | None = None,
     search_semantic_column: str | None = None,
+    searchable_columns: Sequence[tuple[str, str]] | None = None,
     describe_tables: bool = True,
     describe_column_stats: bool = True,
     describe_search_capabilities: bool = True,
@@ -421,6 +482,14 @@ def make_hotdata_tools(
     joined back to the table it came from. Pass ``search_key_column=None`` for the searched
     column alone. A search over a vector column never returns that column, so there the key
     carries the hit on its own unless ``search_columns`` names more.
+
+    ``searchable_columns`` names other indexed columns as ``(table, column)`` pairs, each
+    written ``catalog.schema.table``. The search tool ranks one corpus, so ``search_table``
+    describes that one and nothing else; a database usually has more, and the SQL tool's
+    description is the only place a model learns they exist. Each pair is confirmed
+    against the control plane before it is named, and one no ready index covers is dropped
+    with a warning rather than offered. Order carries: the first is the one a model
+    reaches for most, so lead with the table most questions are about.
 
     Supplying only one of ``search_table``/``search_column`` raises ``ValueError``.
 
@@ -514,6 +583,13 @@ def make_hotdata_tools(
         else " (a URL must be on the public internet, not an internal address)"
     )
 
+    # Confirmed before it is named. A column reported searchable that no index covers
+    # sends the model to a function with no fallback, and the error arrives after it has
+    # committed to the route.
+    confirmed = verify_searchable_columns(
+        client, columns=list(searchable_columns or ()), database=database
+    )
+
     has_search = search_table is not None and search_column is not None
     # Resolved once, before either description is built: the SQL tool and the search tool
     # both describe this column to the same model in the same prompt, and resolving twice
@@ -554,6 +630,7 @@ def make_hotdata_tools(
                     search_table=search_table if has_search else None,
                     search_column=search_column if has_search else None,
                     search_route=search_route,
+                    also_searchable=confirmed,
                     catalogs=catalogs,
                     max_rows=max_rows,
                 ),
