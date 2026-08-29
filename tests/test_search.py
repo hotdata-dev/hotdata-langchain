@@ -670,7 +670,11 @@ def test_vector_distance_sql_never_projects_the_vector_column() -> None:
 def test_vector_distance_sql_rejects_a_metric_it_has_no_function_for() -> None:
     with pytest.raises(ValueError, match="metric must be one of"):
         vector_distance_sql(
-            table=SEMANTIC_TABLE, column="embedding", vector=[0.1], columns=["id"], metric="jaccard"
+            table=SEMANTIC_TABLE,
+            column="embedding",
+            vector=[0.1],
+            columns=["id"],
+            metric="jaccard",  # type: ignore[arg-type]
         )
 
 
