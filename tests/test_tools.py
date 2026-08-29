@@ -396,12 +396,12 @@ def test_management_tools_are_on_by_default(mock_client):
 
 def test_the_sql_tool_stays_first_whichever_tools_are_included(mock_client):
     """It is the one every agent needs; the ordering the model sees should not shift."""
-    excluded: tuple[dict[str, Any], ...] = (
+    kwarg_sets: tuple[dict[str, Any], ...] = (
         {},
         {"management_tools": False},
         {"describe_tables": False},
     )
-    for kwargs in excluded:
+    for kwargs in kwarg_sets:
         tools = make_hotdata_tools(mock_client, **kwargs)
         assert tools[0].name == DEFAULT_SQL_TOOL_NAME
 

@@ -322,7 +322,7 @@ def verify_searchable_columns(
         covering = indexes_for_column(listed[table], column)
         if not covering:
             logger.warning(
-                "no ready search index covers %r on %s; not naming it as searchable",
+                "no ready search index was found covering %r on %s; not naming it as searchable",
                 column,
                 table,
             )

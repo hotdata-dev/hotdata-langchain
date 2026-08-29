@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
 from typing import Any
@@ -56,6 +57,8 @@ DEFAULT_SQL_TOOL_NAME = "hotdata_execute_sql"
 DEFAULT_LIST_DATABASES_TOOL_NAME = "hotdata_list_managed_databases"
 DEFAULT_CREATE_DATABASE_TOOL_NAME = "hotdata_create_managed_database"
 DEFAULT_LOAD_TABLE_TOOL_NAME = "hotdata_load_managed_table"
+
+logger = logging.getLogger(__name__)
 
 
 def _search_examples(
@@ -150,8 +153,10 @@ def sql_tool_description(
     semantic wording also carries the sort, because ``vector_search`` returns its rows
     unsorted and a trailing ``LIMIT`` without ``ORDER BY _distance`` was measured
     returning arbitrary rows rather than the nearest ones. A plain vector index gets no
-    composable paragraph at all: writing that search needs a query vector, which an agent
-    writing SQL cannot produce.
+    composable call of its own: writing that search needs a query vector, which an agent
+    writing SQL cannot produce. That is a fact about the registered column and not about
+    the database, so it is stated of that column by name, and any ``also_searchable``
+    column that does compose is still offered beside it.
 
     Table references are asked for in full. A two-part `schema.table` reference resolves
     and returns correct rows, but the engine's index-lookup rewrite matches on the
@@ -188,39 +193,22 @@ def sql_tool_description(
         "them — it keeps the whole cohort in the query instead of passing ids back as "
         "literals."
     )
-    if semantic and search_route is not None and not search_route.composable:
-        # No composable form: this index needs a query vector, which SQL cannot express.
-        composable = (
-            f"Ranking rows by meaning is not available in SQL here — it needs the query "
-            f"as a vector, which SQL cannot express — so use the {search_tool_name} tool "
-            f"for it and aggregate over what it returns."
-            if search_tool_name
-            else "Ranking rows by meaning is not available in SQL here: it needs the "
-            "query as a vector, which SQL cannot express."
-        )
-    elif semantic:
-        example = _search_examples(
-            "vector_search",
-            singular="is searchable by meaning",
-            generic=(
-                "The call is vector_search('catalog.schema.table', '<column>', "
-                "'<query text>', <k>), over a column that is searchable by meaning."
-            ),
-            search_table=search_table,
-            search_column=search_column,
-            also_searchable=[
-                one for one in (also_searchable or ()) if one.kind == SEMANTIC and one.composable
-            ],
-        )
-        composable = (
-            f"To rank rows by how close their meaning is to a phrase, call vector_search "
-            f"inside SQL: it is a table-valued function returning the matched rows' "
-            f"columns plus a `_distance` where smaller is nearer, so it joins, groups and "
-            f"nests in subqueries like any other table. {example} Its rows come back "
-            f"unsorted, so add ORDER BY _distance ASC — a trailing LIMIT without that "
-            f"sort returns arbitrary rows rather than the nearest ones. {prefer}"
-        )
-    else:
+    declared = list(also_searchable or ())
+    text_columns = [one for one in declared if one.kind == TEXT]
+    semantic_columns = [one for one in declared if one.kind == SEMANTIC and one.composable]
+    for one in declared:
+        if one.kind == SEMANTIC and not one.composable:
+            logger.debug(
+                "%r on %s is reached only with a query vector, which SQL cannot express; "
+                "not naming it as composable",
+                one.column,
+                one.table,
+            )
+    # A route that cannot be composed still leaves the *other* declared columns callable,
+    # so which function leads is the registered route's and neither is dropped for it.
+    registered_composes = search_route is None or search_route.composable
+
+    def text_paragraph() -> str:
         example = _search_examples(
             "bm25_search",
             singular="has a BM25 index",
@@ -228,16 +216,64 @@ def sql_tool_description(
                 "The call is bm25_search('catalog.schema.table', '<column>', "
                 "'<query text>', <k>), over a column that has a BM25 index."
             ),
-            search_table=search_table,
-            search_column=search_column,
-            also_searchable=[one for one in (also_searchable or ()) if one.kind == TEXT],
+            search_table=None if semantic else search_table,
+            search_column=None if semantic else search_column,
+            also_searchable=text_columns,
         )
-        composable = (
+        return (
             f"To rank rows by how well their text matches a phrase, call bm25_search "
             f"inside SQL: it is a table-valued function returning the matched rows' "
             f"columns plus a `score`, so it joins, groups and nests in subqueries like "
             f"any other table. {example} {prefer}"
         )
+
+    def semantic_paragraph() -> str:
+        named = semantic and registered_composes
+        example = _search_examples(
+            "vector_search",
+            singular="is searchable by meaning",
+            generic=(
+                "The call is vector_search('catalog.schema.table', '<column>', "
+                "'<query text>', <k>), over a column that is searchable by meaning."
+            ),
+            search_table=search_table if named else None,
+            search_column=search_column if named else None,
+            also_searchable=semantic_columns,
+        )
+        return (
+            f"To rank rows by how close their meaning is to a phrase, call vector_search "
+            f"inside SQL: it is a table-valued function returning the matched rows' "
+            f"columns plus a `_distance` where smaller is nearer, so it joins, groups and "
+            f"nests in subqueries like any other table. {example} Its rows come back "
+            f"unsorted, so add ORDER BY _distance ASC — a trailing LIMIT without that "
+            f"sort returns arbitrary rows rather than the nearest ones. {prefer}"
+        )
+
+    parts: list[str] = []
+    if semantic:
+        if registered_composes or semantic_columns:
+            parts.append(semantic_paragraph())
+        if not registered_composes:
+            # Scoped to the registered column. "not available in SQL here" would be a
+            # claim about the database made from one tool's registration, which is the
+            # defect the rest of this function was corrected for.
+            reach = (
+                f"Ranking '{search_column}' on {search_table} by meaning needs the query "
+                f"as a vector, which SQL cannot express"
+            )
+            parts.append(
+                f"{reach}, so use the {search_tool_name} tool for it and aggregate over "
+                f"what it returns."
+                if search_tool_name
+                else f"{reach}."
+            )
+        if text_columns:
+            parts.append(text_paragraph())
+    else:
+        parts.append(text_paragraph())
+        if semantic_columns:
+            parts.append(semantic_paragraph())
+    composable = " ".join(parts)
     # On a fused route the search tool does *not* do the same ranking: it also ranks by
     # meaning, and only the text half of that is expressible in SQL. Saying "the same
     # ranking" there would understate the tool in the one prompt that also carries the
@@ -490,7 +526,13 @@ def make_hotdata_tools(
     description is the only place a model learns they exist. Each pair is confirmed
     against the control plane before it is named, and one no ready index covers is dropped
     with a warning rather than offered. Order carries: the first is the one a model
-    reaches for most, so lead with the table most questions are about.
+    reaches for most, so lead with the table most questions are about. A malformed pair
+    raises ``ValueError`` here, and without ``database_id`` there is no scope to confirm
+    against, so the argument is ignored entirely. A declared column of the kind the
+    registered route does not use is still named, through its own function — a BM25
+    column beside a semantic search tool composes perfectly well, and dropping it would
+    repeat the defect this parameter exists to fix. Only a plain vector column is left
+    out, because writing that search needs a query vector.
 
     Supplying only one of ``search_table``/``search_column`` raises ``ValueError``.
 

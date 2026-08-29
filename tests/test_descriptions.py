@@ -309,7 +309,11 @@ def test_sql_description_offers_no_composed_form_it_cannot_write() -> None:
         search_route=_semantic_route(embeds_query=False),
     )
     assert "vector_search(" not in description
-    assert "not available in SQL here" in description
+    # Scoped to the registered column. "not available in SQL here" would be a claim about
+    # the database inferred from one tool's registration, which is the defect this
+    # function was corrected for — another table may carry a composable index.
+    assert f"Ranking '{COLUMN}' on {TABLE} by meaning needs the query as a vector" in description
+    assert "not available in SQL here" not in description
 
 
 def test_sql_description_keeps_bm25_wording_without_a_route() -> None:
@@ -603,3 +607,63 @@ def test_a_plain_vector_column_is_not_offered_as_composable() -> None:
         also_searchable=[plain],
     )
     assert "vector_search('default.public.corpus'" not in description
+
+
+def test_a_declared_text_column_survives_a_semantic_registered_route() -> None:
+    """A confirmed column the caller paid a control-plane call for should not vanish
+    because the search tool happens to be registered over the other kind of index."""
+    description = sql_tool_description(
+        "hotdata_search_semantic",
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_route=_semantic_route(embeds_query=True),
+        also_searchable=[_searchable("default.public.corpus", "content")],
+    )
+    assert "bm25_search('default.public.corpus', 'content'" in description
+    assert f"vector_search('{TABLE}', '{COLUMN}'" in description
+
+
+def test_a_plain_vector_route_still_offers_the_columns_that_do_compose() -> None:
+    """The registered column needing a query vector says nothing about another table's
+    BM25 index, and dropping every declared column for it repeats the defect this
+    function was corrected for."""
+    description = sql_tool_description(
+        "hotdata_search_semantic",
+        search_table=TABLE,
+        search_column=COLUMN,
+        search_route=_semantic_route(embeds_query=False),
+        also_searchable=[_searchable("default.public.corpus", "content")],
+    )
+    assert "bm25_search('default.public.corpus', 'content'" in description
+    assert f"Ranking '{COLUMN}' on {TABLE} by meaning needs the query as a vector" in description
+    assert f"vector_search('{TABLE}'" not in description
+
+
+def test_a_declared_plain_vector_column_is_never_offered_as_composable() -> None:
+    """Writing that search needs a query vector, which an agent writing SQL cannot make."""
+    plain = SearchableColumn(
+        "default.public.corpus",
+        SearchIndex(column="embedding", kind=SEMANTIC, index_type="vector", ready=True),
+    )
+    description = sql_tool_description(
+        "hotdata_search_text", search_table=TABLE, search_column=COLUMN, also_searchable=[plain]
+    )
+    assert "vector_search" not in description
+    assert f"bm25_search('{TABLE}', '{COLUMN}'" in description
+
+
+def test_searchable_columns_reaches_the_sql_description(mock_client: MagicMock) -> None:
+    """The wiring between the verifier and the description is what a caller touches, and
+    it is the part that would silently stop threading through."""
+    confirmed = [_searchable("default.public.corpus", "content")]
+    with patch("hotdata_langchain.tools.verify_searchable_columns", return_value=confirmed):
+        built = {
+            tool.name: tool.description or ""
+            for tool in make_hotdata_tools(
+                mock_client,
+                search_table=TABLE,
+                search_column=COLUMN,
+                searchable_columns=[("default.public.corpus", "content")],
+            )
+        }
+    assert "bm25_search('default.public.corpus', 'content'" in built["hotdata_execute_sql"]
