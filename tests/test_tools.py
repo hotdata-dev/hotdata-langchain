@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import socket
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from unittest.mock import MagicMock
 from urllib.request import Request
 
 import pytest
-from hotdata_framework import LoadManagedTableResult, ManagedDatabase
+from hotdata_framework import LoadManagedTableResult, ManagedDatabase, QueryResult
 
 from hotdata_langchain.databases import (
     _ValidatingRedirectHandler,
@@ -34,24 +35,26 @@ from hotdata_langchain.tools import (
 from tests.conftest import FakeOpener
 
 
-def test_result_rows_for_llm(sample_result):
+def test_result_rows_for_llm(sample_result: QueryResult) -> None:
     rows = result_rows_for_llm(sample_result, max_rows=1)
     assert rows == [{"n": 1}]
 
 
-def test_execute_sql_json(mock_client, sample_result):
+def test_execute_sql_json(mock_client: MagicMock, sample_result: QueryResult) -> None:
     payload = json.loads(execute_sql_json(mock_client, "select 1"))
     assert payload["metadata"]["row_count"] == 2
     assert payload["rows"] == [{"n": 1}, {"n": 2}]
     mock_client.execute_sql.assert_called_once_with("select 1", database=None)
 
 
-def test_execute_sql_json_with_database(mock_client, sample_result, managed_db):
+def test_execute_sql_json_with_database(
+    mock_client: MagicMock, sample_result: QueryResult, managed_db: ManagedDatabase
+) -> None:
     execute_sql_json(mock_client, "select 1", database_id=managed_db)
     mock_client.execute_sql.assert_called_once_with("select 1", database=managed_db)
 
 
-def test_list_managed_databases_json(mock_client):
+def test_list_managed_databases_json(mock_client: MagicMock) -> None:
     mock_client.list_managed_databases.return_value = [
         ManagedDatabase(id="c1", description="sales", default_connection_id="conn_c1"),
     ]
@@ -59,7 +62,7 @@ def test_list_managed_databases_json(mock_client):
     assert payload[0] == {"id": "c1", "name": "sales"}
 
 
-def test_create_managed_database_delegates(mock_client):
+def test_create_managed_database_delegates(mock_client: MagicMock) -> None:
     mock_client.create_managed_database.return_value = ManagedDatabase(
         id="c1",
         description="sales",
@@ -88,7 +91,9 @@ def test_the_create_tool_reports_the_database_under_name(mock_client: MagicMock)
     assert payload == {"id": "c1", "name": "sales"}
 
 
-def test_load_managed_table_delegates(mock_client, managed_db, parquet_file):
+def test_load_managed_table_delegates(
+    mock_client: MagicMock, managed_db: ManagedDatabase, parquet_file: Path
+) -> None:
     """The load addresses the resolved record, so no name can select the target."""
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id="c1",
@@ -112,7 +117,9 @@ def test_load_managed_table_delegates(mock_client, managed_db, parquet_file):
     assert loaded.row_count == 3
 
 
-def test_load_managed_table_rejects_a_path_that_is_not_there(mock_client, managed_db):
+def test_load_managed_table_rejects_a_path_that_is_not_there(
+    mock_client: MagicMock, managed_db: ManagedDatabase
+) -> None:
     """A raw FileNotFoundError says nothing about what the tool would have accepted."""
     with pytest.raises(FileNotFoundError, match="https:// URL"):
         load_managed_table(
@@ -124,7 +131,12 @@ def test_load_managed_table_rejects_a_path_that_is_not_there(mock_client, manage
     mock_client.load_managed_table.assert_not_called()
 
 
-def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file, serve):
+def test_load_managed_table_accepts_a_url(
+    mock_client: MagicMock,
+    managed_db: ManagedDatabase,
+    parquet_file: Path,
+    serve: Callable[..., FakeOpener],
+) -> None:
     """The only ingest route open to a deployed agent, which has no filesystem of its own."""
     mock_client.load_managed_table.return_value = LoadManagedTableResult(
         connection_id="c1",
@@ -146,8 +158,11 @@ def test_load_managed_table_accepts_a_url(mock_client, managed_db, parquet_file,
 
 
 def test_the_downloaded_copy_is_removed_after_the_load(
-    mock_client, managed_db, parquet_file, serve
-):
+    mock_client: MagicMock,
+    managed_db: ManagedDatabase,
+    parquet_file: Path,
+    serve: Callable[..., FakeOpener],
+) -> None:
     """A tool an agent calls in a loop must not leave a file behind on every call."""
     serve(parquet_file.read_bytes())
     load_managed_table(
@@ -160,8 +175,11 @@ def test_the_downloaded_copy_is_removed_after_the_load(
 
 
 def test_the_downloaded_copy_is_removed_when_the_load_fails(
-    mock_client, managed_db, parquet_file, serve
-):
+    mock_client: MagicMock,
+    managed_db: ManagedDatabase,
+    parquet_file: Path,
+    serve: Callable[..., FakeOpener],
+) -> None:
     mock_client.load_managed_table.side_effect = RuntimeError("Bad Request")
     serve(parquet_file.read_bytes())
     with pytest.raises(RuntimeError):
@@ -174,18 +192,22 @@ def test_the_downloaded_copy_is_removed_when_the_load_fails(
     assert not Path(mock_client.load_managed_table.call_args.kwargs["file"]).exists()
 
 
-def test_a_url_that_returns_a_login_page_is_rejected_before_upload(serve):
+def test_a_url_that_returns_a_login_page_is_rejected_before_upload(
+    serve: Callable[..., FakeOpener],
+) -> None:
     """It answers 200 with HTML, so nothing before the magic-byte check notices."""
     serve(b"<html>sign in</html>")
     with pytest.raises(ValueError, match="did not return a parquet file"):
         fetch_parquet("https://example.test/orders.parquet")
 
 
-def test_a_failed_fetch_leaves_no_temporary_file(serve, monkeypatch):
+def test_a_failed_fetch_leaves_no_temporary_file(
+    serve: Callable[..., FakeOpener], monkeypatch: pytest.MonkeyPatch
+) -> None:
     created: list[str] = []
     real_named_temp = tempfile.NamedTemporaryFile
 
-    def record(*args, **kwargs):
+    def record(*args: Any, **kwargs: Any) -> Any:
         handle = real_named_temp(*args, **kwargs)
         created.append(handle.name)
         return handle
@@ -197,13 +219,13 @@ def test_a_failed_fetch_leaves_no_temporary_file(serve, monkeypatch):
     assert created and not any(Path(name).exists() for name in created)
 
 
-def test_fetch_parquet_refuses_a_non_http_url():
+def test_fetch_parquet_refuses_a_non_http_url() -> None:
     """urlopen would honour file://, which would turn this into a local file reader."""
     with pytest.raises(ValueError, match="http:// or https:// URL"):
         fetch_parquet("file:///etc/passwd")
 
 
-def test_the_fetch_sets_a_user_agent(serve, parquet_file):
+def test_the_fetch_sets_a_user_agent(serve: Callable[..., FakeOpener], parquet_file: Path) -> None:
     """Asset hosts 403 urllib's default, which the demo hit and worked around by hand."""
     opener = serve(parquet_file.read_bytes())
     Path(fetch_parquet("https://example.test/orders.parquet")).unlink()
@@ -218,7 +240,9 @@ def test_the_fetch_sets_a_user_agent(serve, parquet_file):
     "address",
     ["169.254.169.254", "127.0.0.1", "10.0.0.1", "192.168.1.5", "::1", "::ffff:127.0.0.1"],
 )
-def test_a_url_resolving_to_a_private_address_is_refused(address, monkeypatch):
+def test_a_url_resolving_to_a_private_address_is_refused(
+    address: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A cloud metadata endpoint and an internal service are both one planted link away."""
     monkeypatch.setattr(
         "hotdata_langchain.databases.socket.getaddrinfo",
@@ -228,7 +252,9 @@ def test_a_url_resolving_to_a_private_address_is_refused(address, monkeypatch):
         fetch_parquet("https://internal.test/orders.parquet")
 
 
-def test_every_resolved_address_is_checked_not_just_the_first(monkeypatch):
+def test_every_resolved_address_is_checked_not_just_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A host answering with one public and one private address must not pass on the public one."""
     monkeypatch.setattr(
         "hotdata_langchain.databases.socket.getaddrinfo",
@@ -238,7 +264,9 @@ def test_every_resolved_address_is_checked_not_just_the_first(monkeypatch):
         fetch_parquet("https://split.test/orders.parquet")
 
 
-def test_a_private_host_is_allowed_when_the_deployment_says_so(monkeypatch, parquet_file):
+def test_a_private_host_is_allowed_when_the_deployment_says_so(
+    monkeypatch: pytest.MonkeyPatch, parquet_file: Path
+) -> None:
     """Loading from an internal store is legitimate; it just has to be chosen deliberately."""
     monkeypatch.setattr(
         "hotdata_langchain.databases.socket.getaddrinfo",
@@ -250,7 +278,7 @@ def test_a_private_host_is_allowed_when_the_deployment_says_so(monkeypatch, parq
     Path(path).unlink()
 
 
-def test_a_redirect_to_a_private_address_is_refused(monkeypatch):
+def test_a_redirect_to_a_private_address_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Checking only the URL as written is defeated by a public URL that 302s inwards."""
     resolved = {"public.test": "93.184.216.34", "internal.test": "169.254.169.254"}
     monkeypatch.setattr(
@@ -269,8 +297,8 @@ def test_a_redirect_to_a_private_address_is_refused(monkeypatch):
         )
 
 
-def test_an_unresolvable_host_says_so(monkeypatch):
-    def explode(host, port):
+def test_an_unresolvable_host_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(host: str, port: int) -> NoReturn:
         raise socket.gaierror("Name or service not known")
 
     monkeypatch.setattr("hotdata_langchain.databases.socket.getaddrinfo", explode)
@@ -278,7 +306,9 @@ def test_an_unresolvable_host_says_so(monkeypatch):
         fetch_parquet("https://nowhere.test/orders.parquet")
 
 
-def test_an_oversized_download_is_refused_from_the_declared_length(serve):
+def test_an_oversized_download_is_refused_from_the_declared_length(
+    serve: Callable[..., FakeOpener],
+) -> None:
     """Declared up front, so the transfer never starts."""
     opener = serve(b"PAR1" + b"x" * 100, {"Content-Length": str(10 * 1024**3)})
     with pytest.raises(ValueError, match=r"over the \d+-byte limit"):
@@ -286,19 +316,21 @@ def test_an_oversized_download_is_refused_from_the_declared_length(serve):
     assert opener.requests, "the request was made, and the body was never read"
 
 
-def test_an_oversized_download_is_refused_while_streaming(serve):
+def test_an_oversized_download_is_refused_while_streaming(serve: Callable[..., FakeOpener]) -> None:
     """Content-Length is optional and can lie, so the bytes are counted regardless."""
     serve(b"PAR1" + b"x" * 5000)
     with pytest.raises(ValueError, match="over the 1024-byte limit"):
         fetch_parquet("https://example.test/huge.parquet", max_bytes=1024)
 
 
-def test_an_oversized_download_leaves_no_temporary_file(serve, monkeypatch):
+def test_an_oversized_download_leaves_no_temporary_file(
+    serve: Callable[..., FakeOpener], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The point of the cap is the disk, so a refusal that kept the bytes would defeat it."""
     created: list[str] = []
     real_named_temp = tempfile.NamedTemporaryFile
 
-    def record(*args, **kwargs):
+    def record(*args: Any, **kwargs: Any) -> Any:
         handle = real_named_temp(*args, **kwargs)
         created.append(handle.name)
         return handle
@@ -310,7 +342,9 @@ def test_an_oversized_download_leaves_no_temporary_file(serve, monkeypatch):
     assert created and not any(Path(name).exists() for name in created)
 
 
-def test_a_file_inside_the_cap_is_kept(serve, parquet_file):
+def test_a_file_inside_the_cap_is_kept(
+    serve: Callable[..., FakeOpener], parquet_file: Path
+) -> None:
     payload = parquet_file.read_bytes()
     serve(payload, {"Content-Length": str(len(payload))})
     path = fetch_parquet("https://example.test/orders.parquet", max_bytes=len(payload))
@@ -318,7 +352,13 @@ def test_a_file_inside_the_cap_is_kept(serve, parquet_file):
     Path(path).unlink()
 
 
-def test_make_hotdata_tools(mock_client, sample_result, managed_db, databases_api, parquet_file):
+def test_make_hotdata_tools(
+    mock_client: MagicMock,
+    sample_result: QueryResult,
+    managed_db: ManagedDatabase,
+    databases_api: MagicMock,
+    parquet_file: Path,
+) -> None:
     mock_client.create_managed_database.return_value = ManagedDatabase(
         id="c1",
         description="sales",
@@ -357,7 +397,7 @@ def test_make_hotdata_tools(mock_client, sample_result, managed_db, databases_ap
     )
 
 
-def test_every_tool_name_is_an_exported_constant(mock_client):
+def test_every_tool_name_is_an_exported_constant(mock_client: MagicMock) -> None:
     """Consumers filter tools by name, so a name that only exists as a literal is API.
 
     Two agents against one workspace already need two different subsets, and each
@@ -379,7 +419,7 @@ def test_every_tool_name_is_an_exported_constant(mock_client):
     assert {tool.name for tool in tools} == constants
 
 
-def test_management_tools_can_be_left_out(mock_client):
+def test_management_tools_can_be_left_out(mock_client: MagicMock) -> None:
     """An agent reading one fixed database cannot use them, and can only misuse them."""
     tools = make_hotdata_tools(mock_client, management_tools=False)
     assert {tool.name for tool in tools} == {
@@ -388,13 +428,13 @@ def test_management_tools_can_be_left_out(mock_client):
     }
 
 
-def test_management_tools_are_on_by_default(mock_client):
+def test_management_tools_are_on_by_default(mock_client: MagicMock) -> None:
     tools = {tool.name for tool in make_hotdata_tools(mock_client)}
     assert DEFAULT_CREATE_DATABASE_TOOL_NAME in tools
     assert DEFAULT_LOAD_TABLE_TOOL_NAME in tools
 
 
-def test_the_sql_tool_stays_first_whichever_tools_are_included(mock_client):
+def test_the_sql_tool_stays_first_whichever_tools_are_included(mock_client: MagicMock) -> None:
     """It is the one every agent needs; the ordering the model sees should not shift."""
     kwarg_sets: tuple[dict[str, Any], ...] = (
         {},
@@ -409,7 +449,7 @@ def test_the_sql_tool_stays_first_whichever_tools_are_included(mock_client):
 # --- Results that succeeded without doing what they said ----------------------------
 
 
-def test_sql_result_warns_about_an_uninterpreted_format_pattern(mock_client):
+def test_sql_result_warns_about_an_uninterpreted_format_pattern(mock_client: MagicMock) -> None:
     """The measured failure: correct numbers labelled with the literal text 'YYYY-MM-DD'."""
     payload = json.loads(
         execute_sql_json(mock_client, "SELECT to_char(start_time, 'YYYY-MM-DD') AS day FROM spans")
@@ -417,18 +457,18 @@ def test_sql_result_warns_about_an_uninterpreted_format_pattern(mock_client):
     assert "'YYYY-MM-DD'" in payload["metadata"][CLIENT_WARNING_KEY]
 
 
-def test_a_correct_query_carries_no_client_warning(mock_client):
+def test_a_correct_query_carries_no_client_warning(mock_client: MagicMock) -> None:
     payload = json.loads(execute_sql_json(mock_client, "SELECT to_char(d, '%Y-%m-%d') FROM t"))
     assert CLIENT_WARNING_KEY not in payload["metadata"]
 
 
-def test_capped_sql_result_says_how_many_rows_matched(mock_client):
+def test_capped_sql_result_says_how_many_rows_matched(mock_client: MagicMock) -> None:
     payload = json.loads(execute_sql_json(mock_client, "SELECT n FROM t", max_rows=1))
     assert len(payload["rows"]) == 1
     assert "2" in payload["metadata"][CLIENT_WARNING_KEY]
 
 
-def test_sql_description_states_the_row_cap(mock_client):
+def test_sql_description_states_the_row_cap(mock_client: MagicMock) -> None:
     """A model that inferred the cap itself guessed the boundary and re-read four rows."""
     tools = {tool.name: tool for tool in make_hotdata_tools(mock_client, max_rows=250)}
     description = tools[DEFAULT_SQL_TOOL_NAME].description or ""
@@ -436,7 +476,7 @@ def test_sql_description_states_the_row_cap(mock_client):
     assert "row_count" in description
 
 
-def test_tool_arguments_carry_descriptions(mock_client):
+def test_tool_arguments_carry_descriptions(mock_client: MagicMock) -> None:
     """Until now the schema told the model a parameter's type and nothing else."""
     tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
     assert "description" in tools[DEFAULT_SQL_TOOL_NAME].args["sql"]
@@ -444,13 +484,13 @@ def test_tool_arguments_carry_descriptions(mock_client):
     assert "description" in tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].args["name"]
 
 
-def test_tool_descriptions_are_unchanged_by_parsing_the_docstrings(mock_client):
+def test_tool_descriptions_are_unchanged_by_parsing_the_docstrings(mock_client: MagicMock) -> None:
     """The explicit description= is what reaches the model, not the docstring summary."""
     tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
     assert (tools[DEFAULT_SQL_TOOL_NAME].description or "").startswith("Run a read-only SQL query")
 
 
-def test_a_failing_query_still_reports_the_format_pattern(mock_client):
+def test_a_failing_query_still_reports_the_format_pattern(mock_client: MagicMock) -> None:
     """Applying a Postgres template to a column returns only 'an internal server error'."""
     mock_client.execute_sql.side_effect = RuntimeError("An internal server error occurred.")
     sql = "SELECT to_char(to_date(first_review, 'YYYY-MM-DD'), 'YYYY-MM') FROM listings"
@@ -462,7 +502,7 @@ def test_a_failing_query_still_reports_the_format_pattern(mock_client):
     assert "An internal server error occurred." in message
 
 
-def test_a_failure_with_nothing_to_add_is_raised_untouched(mock_client):
+def test_a_failure_with_nothing_to_add_is_raised_untouched(mock_client: MagicMock) -> None:
     """Wrapping every failure would put this package's name on errors it knows nothing about."""
     original = RuntimeError("Bad Request")
     mock_client.execute_sql.side_effect = original
@@ -471,7 +511,7 @@ def test_a_failure_with_nothing_to_add_is_raised_untouched(mock_client):
     assert raised.value is original
 
 
-def test_the_format_hint_survives_the_error_feedback_wrapper(mock_client):
+def test_the_format_hint_survives_the_error_feedback_wrapper(mock_client: MagicMock) -> None:
     """It is the failure path the model reads, so the hint has to reach the payload."""
     mock_client.execute_sql.side_effect = RuntimeError("An internal server error occurred.")
     tools = {tool.name: tool for tool in make_hotdata_tools(mock_client, handle_errors=True)}

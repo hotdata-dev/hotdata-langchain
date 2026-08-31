@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about. `SearchableColumn` and `verify_searchable_columns` are exported for callers assembling
   descriptions themselves.
 
+- **The whole supported Python range is now tested, and lint and types are gated.** CI ran
+  `pytest` on 3.12 alone while `requires-python` claimed `>=3.10`, so neither end of the range
+  was exercised; it now runs the suite on 3.10 through 3.14 and fails the build on `ruff check`,
+  `ruff format --check`, or `mypy` in strict mode. The suite passes on every version. One test is
+  skipped on 3.10 only, where `tomllib` is not in the standard library.
+
 ### Fixed
 
 - **The SQL tool no longer claims the registered column is the *only* indexed one.** It said

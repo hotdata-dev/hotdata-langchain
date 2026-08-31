@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.request import Request
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -33,9 +34,9 @@ class FakeOpener:
     def __init__(self, payload: bytes, headers: dict[str, str]) -> None:
         self._payload = payload
         self._headers = headers
-        self.requests: list[object] = []
+        self.requests: list[Request] = []
 
-    def open(self, request: object, timeout: float | None = None) -> FakeResponse:
+    def open(self, request: Request, timeout: float | None = None) -> FakeResponse:
         self.requests.append(request)
         return FakeResponse(self._payload, self._headers)
 
@@ -196,7 +197,7 @@ def search_result() -> QueryResult:
 
 
 @pytest.fixture
-def mock_client(sample_result: QueryResult):
+def mock_client(sample_result: QueryResult) -> MagicMock:
     client = MagicMock()
     client.workspace_id = "ws_test"
     client.execute_sql = MagicMock(return_value=sample_result)

@@ -18,21 +18,21 @@ _RUNTIME_SUBMODULE = re.compile(
 _LANGCHAIN_IMPORT = re.compile(r"(?m)^\s*(?:from|import)\s+langchain(?=[.\s,]|$)")
 
 
-def test_version_is_pep440_core():
+def test_version_is_pep440_core() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+(\+.*)?", hl.__version__)
 
 
-def test_version_matches_distribution_metadata():
+def test_version_matches_distribution_metadata() -> None:
     assert dist_version("hotdata-langchain") == hl.__version__
 
 
 @pytest.mark.parametrize("name", hl.__all__)
-def test_public_export_is_importable(name: str):
+def test_public_export_is_importable(name: str) -> None:
     assert hasattr(hl, name), f"missing export: {name}"
     assert getattr(hl, name) is not None
 
 
-def test_source_uses_hotdata_framework_root_imports():
+def test_source_uses_hotdata_framework_root_imports() -> None:
     violations: list[str] = []
     for path in SOURCE_ROOT.rglob("*.py"):
         if _RUNTIME_SUBMODULE.search(path.read_text(encoding="utf-8")):

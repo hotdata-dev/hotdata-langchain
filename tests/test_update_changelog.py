@@ -5,10 +5,11 @@ from pathlib import Path
 def _update_changelog_text(text: str, ver: str, date: str) -> str:
     path = Path(__file__).resolve().parents[1] / "scripts" / "update_changelog.py"
     spec = importlib.util.spec_from_file_location("update_changelog", path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
     spec.loader.exec_module(module)
-    return module.update_changelog_text(text, ver, date)
+    updated: str = module.update_changelog_text(text, ver, date)
+    return updated
 
 
 HEADER = """# Changelog
@@ -28,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 """
 
 
-def test_empty_unreleased_inserts_version_without_duplicate_heading():
+def test_empty_unreleased_inserts_version_without_duplicate_heading() -> None:
     result = _update_changelog_text(HEADER, "0.1.2", "2026-05-20")
     assert result.count("## [Unreleased]") == 1
     assert "## [0.1.2] - 2026-05-20" in result
@@ -36,7 +37,7 @@ def test_empty_unreleased_inserts_version_without_duplicate_heading():
     assert result.index("## [0.1.2]") < result.index("## [0.1.1]")
 
 
-def test_populated_unreleased_moves_notes_into_new_section():
+def test_populated_unreleased_moves_notes_into_new_section() -> None:
     text = HEADER.replace(
         "## [Unreleased]\n\n",
         "## [Unreleased]\n\n### Added\n\n- New widget.\n\n",
@@ -48,14 +49,14 @@ def test_populated_unreleased_moves_notes_into_new_section():
     assert "The format is based on [Keep a Changelog]" in result.split("## [0.1.2]")[0]
 
 
-def test_one_blank_line_separates_unreleased_from_the_new_section():
+def test_one_blank_line_separates_unreleased_from_the_new_section() -> None:
     """Every other section here is separated by one, and this ran on every release."""
     result = _update_changelog_text(HEADER, "0.1.2", "2026-05-20")
     assert "## [Unreleased]\n\n## [0.1.2]" in result
     assert "\n\n\n" not in result
 
 
-def test_notes_keep_one_blank_line_before_the_previous_release():
+def test_notes_keep_one_blank_line_before_the_previous_release() -> None:
     text = HEADER.replace(
         "## [Unreleased]\n\n",
         "## [Unreleased]\n\n### Added\n\n- New widget.\n\n\n",
