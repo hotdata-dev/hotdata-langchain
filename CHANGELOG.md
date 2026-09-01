@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`keys` and `expires_at` on `hotdata_create_managed_database`.** Both were available on the
+  framework call underneath and neither was reachable from the tool. `keys` declares a table's
+  natural key, which can only be set at creation: a table declared without one is keyless for
+  the rest of its life, so `upsert`, `update` and `delete` are rejected against it and an agent
+  cannot make a re-run idempotent. `expires_at` takes an RFC 3339 timestamp or a relative window
+  such as `"24h"`, which makes lifetime a property of the database rather than a cleanup
+  script's problem.
+
+- **`mode` and `key` on `hotdata_load_managed_table`.** The load hardcoded `mode="replace"`, so
+  `append`, `upsert`, `update` and `delete` were unreachable and an agent could not top up a
+  table it had already loaded. A keyed mode called without `key` now raises before the file is
+  uploaded rather than being rejected by the engine at the far end of a transfer that had
+  already happened.
+
+- **`DESTRUCTIVE_TOOL_NAMES`, and `metadata={"destructive": True}` on the tools it names.**
+  `HumanInTheLoopMiddleware(interrupt_on=...)` is keyed by tool name, so wiring approval meant
+  inferring the mutating set from naming. Only the load tool is in it: creating a database makes
+  something new rather than overwriting something existing. The constant holds the *default*
+  names, so a set built with `tool_name_suffix` should be filtered on the metadata instead —
+  the README shows both.
+
+### Notes
+
+- Two parameters named in the issue this closes are not here, and neither is an oversight.
+  `partition_by` and `sorted_by` arrive on the framework client at **0.12.0**, while this
+  package declares `hotdata-framework>=0.10.0`; wrapping them needs that floor raised, which is
+  a separate decision. `format` and `result_id` exist on the `LoadManagedTableRequest` model but
+  on **no** released version of the framework client, so they need an upstream change rather
+  than a wider signature here.
+
 ## [0.14.0] - 2026-08-31
 
 ### Added

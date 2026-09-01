@@ -198,7 +198,14 @@ def load_tool(client: MagicMock) -> object:
 def test_load_tool_takes_a_database_id_argument(mock_client: MagicMock) -> None:
     """The argument name is what the model sees in the schema, so it must say 'id'."""
     tool = load_tool(mock_client)
-    assert set(tool.args) == {"database_id", "table", "file", "schema_name"}  # type: ignore[attr-defined]
+    assert set(tool.args) == {  # type: ignore[attr-defined]
+        "database_id",
+        "table",
+        "file",
+        "schema_name",
+        "mode",
+        "key",
+    }
 
 
 def test_load_tool_resolves_the_agent_supplied_id_by_id(

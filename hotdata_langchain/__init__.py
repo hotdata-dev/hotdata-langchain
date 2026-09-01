@@ -11,6 +11,7 @@ from hotdata_framework import HotdataClient, ManagedDatabase, QueryResult, from_
 
 from hotdata_langchain._sql import DISTANCE_FUNCTIONS, DistanceMetric
 from hotdata_langchain.databases import (
+    LoadMode,
     create_managed_database,
     list_managed_databases_json,
     load_managed_table,
@@ -75,6 +76,7 @@ from hotdata_langchain.tools import (
     DEFAULT_LIST_DATABASES_TOOL_NAME,
     DEFAULT_LOAD_TABLE_TOOL_NAME,
     DEFAULT_SQL_TOOL_NAME,
+    DESTRUCTIVE_TOOL_NAMES,
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
@@ -94,6 +96,7 @@ __all__ = [
     "DEFAULT_SEARCH_TOOL_NAME",
     "DEFAULT_SEMANTIC_TOOL_NAME",
     "DEFAULT_SQL_TOOL_NAME",
+    "DESTRUCTIVE_TOOL_NAMES",
     "DISTANCE_COLUMN",
     "DISTANCE_FUNCTIONS",
     "RRF_K",
@@ -106,6 +109,7 @@ __all__ = [
     "HotdataClient",
     "HotdataToolError",
     "HotdataVectorStore",
+    "LoadMode",
     "ManagedDatabase",
     "QueryResult",
     "SearchIndex",
