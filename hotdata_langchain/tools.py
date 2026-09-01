@@ -14,6 +14,7 @@ from langchain_core.tools import StructuredTool
 
 from hotdata_langchain._sql import format_pattern_warnings
 from hotdata_langchain.databases import (
+    LoadMode,
     create_managed_database,
     database_label,
     list_managed_databases_json,
@@ -57,6 +58,17 @@ DEFAULT_SQL_TOOL_NAME = "hotdata_execute_sql"
 DEFAULT_LIST_DATABASES_TOOL_NAME = "hotdata_list_managed_databases"
 DEFAULT_CREATE_DATABASE_TOOL_NAME = "hotdata_create_managed_database"
 DEFAULT_LOAD_TABLE_TOOL_NAME = "hotdata_load_managed_table"
+
+#: Tools that can destroy data a caller already has, for wiring approval around.
+#: Pass straight to ``HumanInTheLoopMiddleware(interrupt_on=...)``, which is keyed by
+#: tool name. These are the default names: a tool set built with ``tool_name_suffix``
+#: carries different ones, so read ``tool.metadata["destructive"]`` off the built tools
+#: instead of matching against this set.
+#:
+#: Creating a database is not here. It makes something new rather than overwriting
+#: something existing, and gating it would put an approval in front of the one call an
+#: agent has to make before it can do anything at all.
+DESTRUCTIVE_TOOL_NAMES: frozenset[str] = frozenset({DEFAULT_LOAD_TABLE_TOOL_NAME})
 
 logger = logging.getLogger(__name__)
 
@@ -477,7 +489,15 @@ def make_hotdata_tools(
     databases themselves — listing, creating and loading. Turn it off for an agent that
     reads one fixed database, where they are surface the model can only misuse. The flag
     is not called ``read_only``: listing databases is itself a read, so the set it removes
-    is the instant-database workflow rather than everything that writes.
+    is the instant-database workflow rather than everything that writes. The load tool
+    carries ``metadata={"destructive": True}``; :data:`DESTRUCTIVE_TOOL_NAMES` holds the
+    same set under the default names.
+
+    The create tool takes ``keys`` and ``expires_at`` but not ``partition_by`` or
+    ``sorted_by``, which :func:`~hotdata_langchain.databases.create_managed_database`
+    accepts. Layout is permanent — the API has no ALTER path, and undoing a choice means
+    deleting the table and reloading it, which burns the table name in that database —
+    so it is set by the caller building the tools, not chosen per call by a model.
 
     ``handle_errors`` returns each tool's failures as ``{"error": "<engine message>"}``
     instead of raising. An exception out of a tool aborts the whole agent run, so one
@@ -574,6 +594,8 @@ def make_hotdata_tools(
         name: str,
         schema_name: str = DEFAULT_SCHEMA,
         tables: str = "",
+        keys: dict[str, list[str]] | None = None,
+        expires_at: str = "",
     ) -> str:
         """Create an instant database and optionally declare tables.
 
@@ -582,13 +604,28 @@ def make_hotdata_tools(
                 response carries the id every other tool needs.
             schema_name: schema the declared tables live in.
             tables: table names to declare up front, comma- or newline-separated.
+            keys: each table's natural key, as a table name mapped to its key columns.
+                A key can only be set here. A table declared without one can never be
+                loaded with upsert, update or delete.
+            expires_at: when to reap the database, as an RFC 3339 timestamp or a
+                relative window such as '24h' or '7d'. Left empty it lives until
+                something deletes it.
         """
         table_names = [t.strip() for t in tables.replace(",", "\n").splitlines() if t.strip()]
+        undeclared = sorted(set(keys or {}) - set(table_names))
+        if undeclared:
+            raise ValueError(
+                f"keys names {undeclared}, which is not among the declared tables "
+                f"{table_names}. A key can only be set when its table is declared, so a "
+                "key on a table that is not created here can never take effect."
+            )
         db = create_managed_database(
             client,
             name=name,
             schema=schema_name or DEFAULT_SCHEMA,
             tables=table_names or None,
+            keys=keys or None,
+            expires_at=expires_at or None,
         )
         return json.dumps(managed_database_summary(db), indent=2)
 
@@ -597,17 +634,25 @@ def make_hotdata_tools(
         table: str,
         file: str,
         schema_name: str = DEFAULT_SCHEMA,
+        mode: LoadMode = "replace",
+        key: list[str] | None = None,
     ) -> str:
         """Load a parquet file, local or at a URL, into a declared managed table.
 
         Args:
             database_id: id of the target database, as returned by listing or creating
                 one; a database name is rejected.
-            table: name of a table already declared on that database. The load replaces
-                whatever it holds.
+            table: name of a table already declared on that database.
             file: a local filesystem path, or an http:// or https:// URL, to a parquet
                 file. Only parquet is accepted.
             schema_name: schema the table was declared in.
+            mode: what happens to rows already in the table. 'replace' discards them and
+                'append' keeps them. The other three match an incoming row to an existing
+                one by the table's key. 'upsert' replaces a matched row and inserts one
+                that matches nothing, 'update' replaces a matched row only, and 'delete'
+                removes a matched row and inserts nothing.
+            key: the key columns to match on, required by upsert, update and delete.
+                They must be the columns the table was declared with.
         """
         loaded = load_managed_table(
             client,
@@ -615,6 +660,8 @@ def make_hotdata_tools(
             table=table,
             file=file,
             schema=schema_name or DEFAULT_SCHEMA,
+            mode=mode,
+            key=key or None,
             allow_private_hosts=allow_private_hosts,
         )
         return json.dumps(load_result_summary(loaded), indent=2)
@@ -710,7 +757,11 @@ def make_hotdata_tools(
                         "label only and is not an identifier; the response carries the 'id', which "
                         "is what every other tool needs — keep it. Declare the tables you intend "
                         "to load up front as a comma- or newline-separated list, so data loads "
-                        "straight into them."
+                        "straight into them. Declare 'keys' at the same time for any table you "
+                        "will load more than once: a key can only be set here, and a table "
+                        "created without one can never be loaded with upsert, update or delete. "
+                        "Set 'expires_at' when the data is temporary, so the database is reaped "
+                        "rather than left behind."
                     ),
                     parse_docstring=True,
                 ),
@@ -719,15 +770,27 @@ def make_hotdata_tools(
                     name=load_name,
                     description=(
                         "Load a parquet file into a table that was declared on an instant "
-                        "database, replacing whatever the table held. 'file' is either a path on "
+                        "database. By default this replaces whatever the table held; pass 'mode' "
+                        "to keep it. 'append' adds rows blindly. The other three match an "
+                        "incoming row to an existing one by key, so they need 'key' and work "
+                        "only on a table that was declared with one: 'upsert' replaces a matched "
+                        "row and inserts one that matches nothing, 'update' replaces a matched "
+                        "row only, and 'delete' REMOVES a matched row and inserts nothing — the "
+                        "rows you upload choose what is deleted, they are not added. "
+                        "'file' is either a path on "
                         "the local filesystem or an http:// or https:// URL, which is downloaded "
                         f"and uploaded for you{url_rule}. 'database_id' must be a database id "
                         f"returned by {list_name} or {create_name} — call one of those first if "
                         "you do not have an id. A database name is rejected: "
                         "names are not unique, and this load overwrites the table, so the wrong "
-                        "target would destroy data. Only parquet is accepted, not CSV or JSON."
+                        "target would destroy data. Only parquet is accepted, not CSV or JSON. "
+                        "If a load fails without saying whether it landed, do not repeat it with "
+                        "mode='append': the retry adds the rows a second time. Re-run 'replace', "
+                        "or use 'upsert' with a key — both land the same rows however many "
+                        "times they run."
                     ),
                     parse_docstring=True,
+                    metadata={"destructive": True},
                 ),
             ]
         )

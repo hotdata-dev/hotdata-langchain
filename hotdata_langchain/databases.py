@@ -7,8 +7,9 @@ import json
 import logging
 import socket
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -19,6 +20,8 @@ from hotdata_framework import (
     HotdataClient,
     LoadManagedTableResult,
     ManagedDatabase,
+    TablePartitionKey,
+    TableSortKey,
 )
 from hotdata_framework.databases import api_error_message, managed_database_from_detail
 
@@ -28,6 +31,16 @@ CATALOG_QUERY = (
     "SELECT DISTINCT table_catalog FROM information_schema.tables "
     "WHERE table_schema <> 'information_schema'"
 )
+
+#: How a load treats the rows a table already holds. ``replace`` discards them and
+#: ``append`` keeps them. The other three match an incoming row against an existing one
+#: by the table's declared key, so they are legal only on a table that has one:
+#: ``upsert`` replaces a matched row and inserts one that matches nothing, ``update``
+#: replaces a matched row only, and ``delete`` removes a matched row and inserts nothing.
+LoadMode = Literal["replace", "append", "upsert", "update", "delete"]
+
+#: Load modes that match rows by key, and so require one.
+KEYED_LOAD_MODES: frozenset[str] = frozenset({"upsert", "update", "delete"})
 
 URL_SCHEMES = ("http://", "https://")
 PARQUET_MAGIC = b"PAR1"
@@ -156,12 +169,39 @@ def create_managed_database(
     name: str,
     schema: str = DEFAULT_SCHEMA,
     tables: list[str] | None = None,
+    keys: dict[str, list[str]] | None = None,
+    expires_at: str | None = None,
+    partition_by: dict[str, Sequence[TablePartitionKey]] | None = None,
+    sorted_by: dict[str, Sequence[TableSortKey]] | None = None,
 ) -> ManagedDatabase:
     """Create an instant database, labelled ``name``.
 
     ``name`` is a display label only; address the result by its ``id`` from here on.
+
+    ``keys`` declares each table's natural key, mapping a table name to its key columns.
+    A key can only be declared here, at creation: a table created without one is keyless
+    for the rest of its life, and every key-matched load mode is rejected against it.
+
+    ``expires_at`` is an RFC 3339 timestamp or a relative window such as ``"24h"`` or
+    ``"7d"``, after which the database is reaped. Without it the database lives until
+    something deletes it, which makes lifetime a cleanup script's problem rather than a
+    property of the thing created.
+
+    ``partition_by`` and ``sorted_by`` set a table's physical layout, and both are
+    permanent: the API has no ALTER path, so the only way to change one is to delete the
+    table and reload it, which burns the table name in that database. They are reachable
+    here and deliberately not offered to a model — see
+    :func:`~hotdata_langchain.tools.make_hotdata_tools`.
     """
-    return client.create_managed_database(description=name, schema=schema, tables=tables)
+    return client.create_managed_database(
+        description=name,
+        schema=schema,
+        tables=tables,
+        keys=keys,
+        expires_at=expires_at,
+        partition_by=partition_by,
+        sorted_by=sorted_by,
+    )
 
 
 def is_url(file: str) -> bool:
@@ -325,6 +365,8 @@ def load_managed_table(
     table: str,
     file: str,
     schema: str = DEFAULT_SCHEMA,
+    mode: LoadMode = "replace",
+    key: list[str] | None = None,
     allow_private_hosts: bool = False,
 ) -> LoadManagedTableResult:
     """Load a parquet file into a declared table of the database with that id.
@@ -339,14 +381,28 @@ def load_managed_table(
 
     ``database_id`` is resolved by id (see :func:`resolve_database_by_id`) and the
     resolved record is what addresses the load, so a display label never selects the
-    target. This load replaces the table's contents, which is why addressing it
+    target. The default load replaces the table's contents, which is why addressing it
     unambiguously matters.
+
+    ``mode`` chooses what happens to rows already there, and :data:`LoadMode` gives each
+    one's effect. The three keyed modes need ``key`` and are rejected unless the table was
+    declared with one, which can only happen at creation. Note that ``delete`` inserts
+    nothing: it uses the uploaded rows to choose which existing rows to remove. Raises
+    ``ValueError`` for a keyed mode called without ``key``, rather than letting the engine
+    reject it after the file has been uploaded.
     """
+    if mode in KEYED_LOAD_MODES and not key:
+        raise ValueError(
+            f"mode={mode!r} matches rows by key, so 'key' is required. Pass the column "
+            "names the table was declared with, or use mode='replace' or 'append'."
+        )
     database = resolve_database_by_id(client, database_id)
     if is_url(file):
         path = fetch_parquet(file, allow_private_hosts=allow_private_hosts)
         try:
-            return client.load_managed_table(database, table, schema=schema, file=path)
+            return client.load_managed_table(
+                database, table, schema=schema, file=path, mode=mode, key=key
+            )
         finally:
             Path(path).unlink(missing_ok=True)
     if not Path(file).is_file():
@@ -354,7 +410,7 @@ def load_managed_table(
             f"no file at {file!r}. Pass a path to a local parquet file, or an http:// or "
             "https:// URL to one — other formats are not accepted."
         )
-    return client.load_managed_table(database, table, schema=schema, file=file)
+    return client.load_managed_table(database, table, schema=schema, file=file, mode=mode, key=key)
 
 
 def managed_database_summary(db: ManagedDatabase) -> dict[str, str]:

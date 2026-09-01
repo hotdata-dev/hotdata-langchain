@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`keys` and `expires_at` on `hotdata_create_managed_database`.** Both were available on the
+  framework call underneath and neither was reachable from the tool. `keys` declares a table's
+  natural key, which can only be set at creation: a table declared without one is keyless for
+  the rest of its life, so `upsert`, `update` and `delete` are rejected against it and an agent
+  cannot make a re-run idempotent. `expires_at` takes an RFC 3339 timestamp or a relative window
+  such as `"24h"`, which makes lifetime a property of the database rather than a cleanup
+  script's problem.
+
+- **`mode` and `key` on `hotdata_load_managed_table`.** The load hardcoded `mode="replace"`, so
+  `append`, `upsert`, `update` and `delete` were unreachable and an agent could not top up a
+  table it had already loaded. A keyed mode called without `key` now raises before the file is
+  uploaded rather than being rejected by the engine at the far end of a transfer that had
+  already happened.
+
+- **`DESTRUCTIVE_TOOL_NAMES`, and `metadata={"destructive": True}` on the tools it names.**
+  `HumanInTheLoopMiddleware(interrupt_on=...)` is keyed by tool name, so wiring approval meant
+  inferring the mutating set from naming. Only the load tool is in it: creating a database makes
+  something new rather than overwriting something existing. The constant holds the *default*
+  names, so a set built with `tool_name_suffix` should be filtered on the metadata instead —
+  the README shows both.
+
+- **`TablePartitionKey` and `TableSortKey` re-exported**, since both now appear in
+  `hl.create_managed_database`'s signature and a caller should not need a second import from a
+  package this one's docs do not name.
+
+- **`partition_by` and `sorted_by` on `hl.create_managed_database`.** Reachable from Python,
+  and deliberately not offered to a model: layout is permanent, the API has no ALTER path, and
+  undoing a choice means deleting the table and reloading it, which burns the table name in
+  that database. A model has no basis for choosing a partition transform and cannot undo a
+  wrong one.
+
+### Fixed
+
+- **Building the tools raised on `langchain-core` 1.0.0**, the version this package declares as
+  its floor. Its docstring parser reads a colon in a wrapped `Args:` continuation line as the
+  start of a new argument, so `Arg one by key in docstring not found in function signature`
+  aborted every `make_hotdata_tools` call. Newer `langchain-core` parses it without complaint,
+  which is why the locked build never saw it. Found by running the suite at the floor, not from
+  a report.
+
+### Changed
+
+- **CI now runs the suite at the declared dependency floor** with
+  `uv --resolution lowest-direct`, alongside the existing matrix. `uv sync --locked` installs
+  the resolved ceiling, so until now nothing exercised the versions `pyproject.toml` advertises
+  support for — which is how the `langchain-core` break above reached a release, and how the
+  framework floor drifted three minor versions behind what the package was developed against.
+
+- **`hotdata-framework>=0.13.0`** (from `>=0.10.0`). 0.13.0 is where an `append` load became
+  retryable — before it, `append` was excluded from retries, so a load that hit
+  `409 RESOURCE_LOCKED` failed whatever `max_retries` was set to. This release makes `append`
+  reachable from a tool, so the floor moves with it. It also brings terminal-vs-transient 409
+  classification and `Retry-After` handling. The suite passes on every version from the old
+  floor to this one; the bump is about the failure modes the new load modes can hit, not a
+  broken build.
+
+### Notes
+
+- `format` and `result_id` on the load are named in the issue this closes and are not here.
+  They exist on the `LoadManagedTableRequest` model but on **no** released version of the
+  framework client, which hardcodes the fields it forwards — so they need an upstream change
+  rather than a wider signature in this package.
+
+- The load tool now states what each keyed mode does to a matched row rather than naming the
+  three together. `delete` removes matched rows and inserts nothing, which the previous wording
+  left open to reading as delete-then-insert by key — a misreading that destroys rows and
+  reports success. A `keys` entry naming an undeclared table is now refused rather than
+  silently creating a keyless table, which cannot be corrected afterwards.
+
+- Retrying a failed `append` from an agent still duplicates rows, and no version fixes that.
+  Re-sending the same upload replays the server's receipt, but a tool call has no memory across
+  turns, so a repeat stages a fresh upload with no receipt to replay. The load tool's
+  description now says so, and points at `replace` or a keyed `upsert` instead.
+
 ## [0.14.0] - 2026-08-31
 
 ### Added

@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import inspect
 import json
 import socket
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, NoReturn
-from unittest.mock import MagicMock
+from typing import Any, NoReturn, get_args
+from unittest.mock import MagicMock, create_autospec
 from urllib.request import Request
 
 import pytest
-from hotdata_framework import LoadManagedTableResult, ManagedDatabase, QueryResult
+from hotdata_framework import (
+    HotdataClient,
+    LoadManagedTableResult,
+    ManagedDatabase,
+    QueryResult,
+    TableSortKey,
+)
 
 from hotdata_langchain.databases import (
+    LoadMode,
     _ValidatingRedirectHandler,
     create_managed_database,
     fetch_parquet,
@@ -28,6 +36,7 @@ from hotdata_langchain.tools import (
     DEFAULT_LIST_DATABASES_TOOL_NAME,
     DEFAULT_LOAD_TABLE_TOOL_NAME,
     DEFAULT_SQL_TOOL_NAME,
+    DESTRUCTIVE_TOOL_NAMES,
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
@@ -73,6 +82,10 @@ def test_create_managed_database_delegates(mock_client: MagicMock) -> None:
         description="sales",
         schema="public",
         tables=["orders"],
+        keys=None,
+        expires_at=None,
+        partition_by=None,
+        sorted_by=None,
     )
     assert db.description == "sales"
 
@@ -113,6 +126,8 @@ def test_load_managed_table_delegates(
         "orders",
         schema="public",
         file=str(parquet_file),
+        mode="replace",
+        key=None,
     )
     assert loaded.row_count == 3
 
@@ -640,3 +655,195 @@ def test_a_database_with_no_name_gets_no_sentence_rather_than_one_naming_its_id(
 def test_an_unscoped_tool_set_names_no_database(mock_client: MagicMock) -> None:
     tools = {t.name: t for t in make_hotdata_tools(mock_client)}
     assert "Works on the" not in (tools["hotdata_execute_sql"].description or "")
+
+
+# --- Provisioning arguments the tools used to drop (#91) ------------------------------
+
+
+def test_create_passes_keys_and_expiry_through(mock_client: MagicMock) -> None:
+    """A key can only be declared at creation, so a tool that drops it makes a table
+    that can never take an upsert."""
+    mock_client.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    create_managed_database(
+        mock_client,
+        name="sales",
+        tables=["orders"],
+        keys={"orders": ["id"]},
+        expires_at="24h",
+    )
+    kwargs = mock_client.create_managed_database.call_args.kwargs
+    assert kwargs["keys"] == {"orders": ["id"]}
+    assert kwargs["expires_at"] == "24h"
+
+
+def test_load_passes_mode_and_key_through(
+    mock_client: MagicMock, managed_db: ManagedDatabase, parquet_file: Path
+) -> None:
+    mock_client.load_managed_table.return_value = LoadManagedTableResult(
+        connection_id="c1",
+        schema_name="public",
+        table_name="orders",
+        row_count=3,
+        full_name="sales.public.orders",
+    )
+    load_managed_table(
+        mock_client,
+        database_id=managed_db,
+        table="orders",
+        file=str(parquet_file),
+        mode="upsert",
+        key=["id"],
+    )
+    kwargs = mock_client.load_managed_table.call_args.kwargs
+    assert kwargs["mode"] == "upsert"
+    assert kwargs["key"] == ["id"]
+
+
+@pytest.mark.parametrize("mode", ["upsert", "update", "delete"])
+def test_a_keyed_mode_without_a_key_is_refused_before_upload(
+    mock_client: MagicMock, managed_db: ManagedDatabase, parquet_file: Path, mode: str
+) -> None:
+    """The engine would reject it too, but only after the file had been uploaded."""
+    with pytest.raises(ValueError, match="matches rows by key"):
+        load_managed_table(
+            mock_client,
+            database_id=managed_db,
+            table="orders",
+            file=str(parquet_file),
+            mode=mode,  # type: ignore[arg-type]
+        )
+    mock_client.load_managed_table.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["replace", "append"])
+def test_an_unkeyed_mode_needs_no_key(
+    mock_client: MagicMock, managed_db: ManagedDatabase, parquet_file: Path, mode: str
+) -> None:
+    mock_client.load_managed_table.return_value = LoadManagedTableResult(
+        connection_id="c1",
+        schema_name="public",
+        table_name="orders",
+        row_count=3,
+        full_name="sales.public.orders",
+    )
+    load_managed_table(
+        mock_client,
+        database_id=managed_db,
+        table="orders",
+        file=str(parquet_file),
+        mode=mode,  # type: ignore[arg-type]
+    )
+    assert mock_client.load_managed_table.call_args.kwargs["mode"] == mode
+
+
+def test_the_load_tool_is_marked_destructive_and_the_create_tool_is_not(
+    mock_client: MagicMock,
+) -> None:
+    """`interrupt_on` is keyed by tool name, so the mutating set has to be readable."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    assert (tools[DEFAULT_LOAD_TABLE_TOOL_NAME].metadata or {}).get("destructive") is True
+    assert (tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].metadata or {}).get("destructive") is None
+    assert {DEFAULT_LOAD_TABLE_TOOL_NAME} == DESTRUCTIVE_TOOL_NAMES
+
+
+def test_the_destructive_marking_survives_a_tool_name_suffix(mock_client: MagicMock) -> None:
+    """The constant holds default names, so a suffixed set has to be read off metadata."""
+    tools = make_hotdata_tools(mock_client, tool_name_suffix="sales")
+    marked = {t.name for t in tools if (t.metadata or {}).get("destructive")}
+    assert marked == {f"{DEFAULT_LOAD_TABLE_TOOL_NAME}_sales"}
+    assert not marked & DESTRUCTIVE_TOOL_NAMES
+
+
+def test_the_load_tool_offers_every_mode_to_the_model(mock_client: MagicMock) -> None:
+    """A mode absent from the schema is one the model cannot reach.
+
+    Read off `enum` rather than the serialised field: the field's description names every
+    mode in prose, so a substring check passes even with the enum gone.
+    """
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    field = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].args["mode"]
+    assert set(field["enum"]) == set(get_args(LoadMode))
+
+
+def test_the_load_tool_says_what_each_keyed_mode_does(mock_client: MagicMock) -> None:
+    """Naming the three together without an effect reads as delete-then-insert by key."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    description = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].description or ""
+    assert "inserts one that matches nothing" in description
+    assert "replaces a matched row only" in description
+    assert "REMOVES a matched row and inserts nothing" in description
+
+
+def test_layout_reaches_the_helper_but_is_not_offered_to_the_model(
+    mock_client: MagicMock,
+) -> None:
+    """Layout is permanent and has no ALTER path, so the caller sets it, not the model."""
+    mock_client.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    create_managed_database(
+        mock_client,
+        name="sales",
+        tables=["orders"],
+        sorted_by={"orders": [TableSortKey(column="id")]},
+    )
+    assert mock_client.create_managed_database.call_args.kwargs["sorted_by"] == {
+        "orders": [TableSortKey(column="id")]
+    }
+
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    offered = set(tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].args)
+    assert {"keys", "expires_at"} <= offered
+    assert not offered & {"partition_by", "sorted_by"}
+
+
+def test_the_load_tool_warns_against_repeating_a_failed_append(mock_client: MagicMock) -> None:
+    """`handle_errors=True` hands the failure back to the model, which invites a retry."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    description = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].description or ""
+    assert "append" in description
+    assert "second time" in description
+
+
+def test_the_create_tool_refuses_a_key_on_a_table_it_is_not_declaring(
+    mock_client: MagicMock,
+) -> None:
+    """A key can only be set at creation, so one aimed at no declared table is lost."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    with pytest.raises(ValueError, match="not among the declared tables"):
+        tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].invoke(
+            {"name": "sales", "tables": "orders", "keys": {"ordres": ["id"]}}
+        )
+    mock_client.create_managed_database.assert_not_called()
+
+
+def test_every_provisioning_call_binds_to_the_real_client_signature() -> None:
+    """A MagicMock accepts any keyword, so it cannot catch one the framework rejects.
+
+    This is the failure `format` and `result_id` would have been: names that exist on the
+    request model but not on the client method that forwards it.
+    """
+    spec = create_autospec(HotdataClient, instance=True)
+    spec.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    spec.load_managed_table.return_value = LoadManagedTableResult(
+        connection_id="c1",
+        schema_name="public",
+        table_name="orders",
+        row_count=1,
+        full_name="sales.public.orders",
+    )
+    create_managed_database(
+        spec,
+        name="sales",
+        tables=["orders"],
+        keys={"orders": ["id"]},
+        expires_at="24h",
+        sorted_by={"orders": [TableSortKey(column="id")]},
+    )
+    inspect.signature(HotdataClient.create_managed_database).bind(
+        spec, **spec.create_managed_database.call_args.kwargs
+    )

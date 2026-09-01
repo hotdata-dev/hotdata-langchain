@@ -7,10 +7,18 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from hotdata_framework import HotdataClient, ManagedDatabase, QueryResult, from_env
+from hotdata_framework import (
+    HotdataClient,
+    ManagedDatabase,
+    QueryResult,
+    TablePartitionKey,
+    TableSortKey,
+    from_env,
+)
 
 from hotdata_langchain._sql import DISTANCE_FUNCTIONS, DistanceMetric
 from hotdata_langchain.databases import (
+    LoadMode,
     create_managed_database,
     list_managed_databases_json,
     load_managed_table,
@@ -75,6 +83,7 @@ from hotdata_langchain.tools import (
     DEFAULT_LIST_DATABASES_TOOL_NAME,
     DEFAULT_LOAD_TABLE_TOOL_NAME,
     DEFAULT_SQL_TOOL_NAME,
+    DESTRUCTIVE_TOOL_NAMES,
     execute_sql_json,
     make_hotdata_tools,
     result_rows_for_llm,
@@ -94,6 +103,7 @@ __all__ = [
     "DEFAULT_SEARCH_TOOL_NAME",
     "DEFAULT_SEMANTIC_TOOL_NAME",
     "DEFAULT_SQL_TOOL_NAME",
+    "DESTRUCTIVE_TOOL_NAMES",
     "DISTANCE_COLUMN",
     "DISTANCE_FUNCTIONS",
     "RRF_K",
@@ -106,12 +116,15 @@ __all__ = [
     "HotdataClient",
     "HotdataToolError",
     "HotdataVectorStore",
+    "LoadMode",
     "ManagedDatabase",
     "QueryResult",
     "SearchIndex",
     "SearchRoute",
     "SearchStrategy",
     "SearchableColumn",
+    "TablePartitionKey",
+    "TableSortKey",
     "__version__",
     "bm25_search_json",
     "bm25_search_sql",

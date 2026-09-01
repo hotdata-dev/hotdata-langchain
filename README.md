@@ -53,7 +53,7 @@ id of each.
 | `hotdata_execute_sql` | Run a SQL query and return rows as JSON |
 | `hotdata_list_managed_databases` | List available instant databases, with the id of each |
 | `hotdata_create_managed_database` | Create a new instant database and return its id |
-| `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id |
+| `hotdata_load_managed_table` | Load a parquet file — local path or URL — into a managed table, addressed by database id, replacing or merging with what it holds |
 | `hotdata_describe_tables` | List tables, or one table's columns, types and how many rows hold a value |
 | `hotdata_search_text` | Search an indexed column by text relevance, fused with meaning where the table supports it (opt-in — see below) |
 | `hotdata_search_semantic` | Search an indexed column by meaning; replaces the above when the column carries a vector index |
@@ -78,6 +78,77 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...", describe_tables=Fal
 `management_tools=False` drops listing, creating and loading. It is not called `read_only`:
 listing databases is itself a read, so the set it removes is the instant-database workflow
 rather than everything that writes.
+
+### Keys and lifetime are set once, at creation
+
+A table's natural key can only be declared when the database is created. A table made without
+one is keyless for the rest of its life, and `upsert`, `update` and `delete` are rejected
+against it — so an agent that will load the same table twice needs `keys` on the first call or
+it can never make a re-run idempotent. `expires_at` takes an RFC 3339 timestamp or a relative
+window like `"24h"`; without it the database lives until something deletes it, which turns
+lifetime into a cleanup script rather than a property of the thing created.
+
+A keyed load with no `key` raises before the file is uploaded rather than after, since the
+engine would reject it at the far end of a transfer that had already happened. A `keys` entry
+naming a table the same call is not declaring is refused too, since it could never take effect.
+
+The three keyed modes match an incoming row to an existing one and then differ in what they do
+with it, so they are worth stating separately:
+
+| `mode` | Matched row | Row that matches nothing |
+|---|---|---|
+| `upsert` | replaced | inserted |
+| `update` | replaced | ignored |
+| `delete` | **removed** | ignored |
+
+`delete` inserts nothing. The rows you upload choose which existing rows to remove; they are
+not added to the table.
+
+**Do not repeat a failed `append`.** Re-sending the same upload replays the server's receipt
+instead of applying the load twice, but a tool call has no memory across turns: a repeat stages
+a fresh upload, which has no receipt to replay, and the rows land a second time. `replace` and
+a keyed `upsert` both reach the same state however many times they run, so prefer those for
+anything an agent might retry — and `handle_errors=True` makes a retry likely, since the
+failure goes back to the model rather than ending the run.
+
+`partition_by` and `sorted_by` are on `hl.create_managed_database` but not on the create tool.
+Layout is permanent — the API has no ALTER path, and undoing a choice means deleting the table
+and reloading it, which burns the table name in that database — so it is set by whoever builds
+the tools, not chosen per call by a model:
+
+```python
+
+db = hl.create_managed_database(
+    client, name="events", tables=["spans"],
+    keys={"spans": ["span_id"]},
+    sorted_by={"spans": [hl.TableSortKey(column="start_time")]},
+)
+```
+
+### Wiring approval around the tools that can destroy data
+
+`HumanInTheLoopMiddleware(interrupt_on=...)` is keyed by tool name, so the mutating set has to
+be readable rather than inferred from naming:
+
+```python
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+middleware = HumanInTheLoopMiddleware(
+    interrupt_on=dict.fromkeys(hl.DESTRUCTIVE_TOOL_NAMES, True),
+)
+```
+
+`DESTRUCTIVE_TOOL_NAMES` holds the **default** names. A set built with `tool_name_suffix`
+carries different ones, so read the marking off the built tools instead:
+
+```python
+tools = hl.make_hotdata_tools(client, database_id="dbid...", tool_name_suffix="sales")
+names = [t.name for t in tools if (t.metadata or {}).get("destructive")]
+```
+
+Creating a database is not in the set. It makes something new rather than overwriting
+something existing, and gating it would put an approval in front of the one call an agent has
+to make before it can do anything at all.
 
 ## Letting the model recover from a failed call
 
@@ -207,12 +278,16 @@ created = tools["hotdata_create_managed_database"].invoke({
     "name": "sales",            # a display label, not an identifier
     "schema_name": "public",
     "tables": "orders,customers",
+    "keys": {"orders": ["id"]},  # only settable at creation
+    "expires_at": "7d",          # or an RFC 3339 timestamp; omit to keep it forever
 })
 
 tools["hotdata_load_managed_table"].invoke({
     "database_id": json.loads(created)["id"],
     "table": "orders",
     "file": "/path/to/orders.parquet",   # or "https://example.com/orders.parquet"
+    "mode": "upsert",                     # default is "replace"
+    "key": ["id"],
 })
 ```
 
@@ -650,9 +725,9 @@ tools = hl.make_hotdata_tools(client, database_id="dbid...")
 
 **Databases are addressed by id, never by name.** A database name is a display label and is
 not unique, so a name lookup can silently resolve to the wrong database — and the agent's
-`hotdata_load_managed_table` overwrites the table it loads into. Passing a name raises
-`KeyError` — or, under `handle_errors=True`, returns it to the model rather than resolving
-anything. Ids come from `client.list_managed_databases()`, the
+`hotdata_load_managed_table` overwrites the table it loads into unless a mode says otherwise.
+Passing a name raises `KeyError` — or, under `handle_errors=True`, returns it to the model
+rather than resolving anything. Ids come from `client.list_managed_databases()`, the
 `hotdata_list_managed_databases` tool, or the response of a create.
 
 The id is resolved once when the tools are built, so a bad id fails there rather than on the
