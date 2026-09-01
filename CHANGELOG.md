@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-01
+
 ### Added
 
 - **`keys` and `expires_at` on `hotdata_create_managed_database`.** Both were available on the
@@ -42,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The load tool now says what each keyed mode does to a matched row**, rather than naming
+  `upsert`, `update` and `delete` together under one clause about matching by key. `delete`
+  removes matched rows and inserts nothing, and the previous wording left it open to reading as
+  delete-then-insert by key — a misreading that destroys rows and reports success. Each mode now
+  states its effect on a matched row and on one that matches nothing.
+
+- **A `keys` entry naming a table the same call is not declaring is refused.** It would
+  otherwise create a keyless table and report success, and since a key can only be set at
+  creation, the only fix is to create another database.
+
 - **Building the tools raised on `langchain-core` 1.0.0**, the version this package declares as
   its floor. Its docstring parser reads a colon in a wrapped `Args:` continuation line as the
   start of a new argument, so `Arg one by key in docstring not found in function signature`
@@ -57,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support for — which is how the `langchain-core` break above reached a release, and how the
   framework floor drifted three minor versions behind what the package was developed against.
 
-- **`hotdata-framework>=0.13.0`** (from `>=0.10.0`). 0.13.0 is where an `append` load became
+- **`hotdata-framework>=0.13.0`** (from `>=0.10.0`), which tightens what an existing installation
+  may resolve. 0.13.0 is where an `append` load became
   retryable — before it, `append` was excluded from retries, so a load that hit
   `409 RESOURCE_LOCKED` failed whatever `max_retries` was set to. This release makes `append`
   reachable from a tool, so the floor moves with it. It also brings terminal-vs-transient 409
@@ -71,12 +84,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They exist on the `LoadManagedTableRequest` model but on **no** released version of the
   framework client, which hardcodes the fields it forwards — so they need an upstream change
   rather than a wider signature in this package.
-
-- The load tool now states what each keyed mode does to a matched row rather than naming the
-  three together. `delete` removes matched rows and inserts nothing, which the previous wording
-  left open to reading as delete-then-insert by key — a misreading that destroys rows and
-  reports success. A `keys` entry naming an undeclared table is now refused rather than
-  silently creating a keyless table, which cannot be corrected afterwards.
 
 - Retrying a failed `append` from an agent still duplicates rows, and no version fixes that.
   Re-sending the same upload replays the server's receipt, but a tool call has no memory across
