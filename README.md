@@ -89,7 +89,20 @@ window like `"24h"`; without it the database lives until something deletes it, w
 lifetime into a cleanup script rather than a property of the thing created.
 
 A keyed load with no `key` raises before the file is uploaded rather than after, since the
-engine would reject it at the far end of a transfer that had already happened.
+engine would reject it at the far end of a transfer that had already happened. A `keys` entry
+naming a table the same call is not declaring is refused too, since it could never take effect.
+
+The three keyed modes match an incoming row to an existing one and then differ in what they do
+with it, so they are worth stating separately:
+
+| `mode` | Matched row | Row that matches nothing |
+|---|---|---|
+| `upsert` | replaced | inserted |
+| `update` | replaced | ignored |
+| `delete` | **removed** | ignored |
+
+`delete` inserts nothing. The rows you upload choose which existing rows to remove; they are
+not added to the table.
 
 **Do not repeat a failed `append`.** Re-sending the same upload replays the server's receipt
 instead of applying the load twice, but a tool call has no memory across turns: a repeat stages
@@ -104,12 +117,11 @@ and reloading it, which burns the table name in that database — so it is set b
 the tools, not chosen per call by a model:
 
 ```python
-from hotdata_framework import TableSortKey
 
 db = hl.create_managed_database(
     client, name="events", tables=["spans"],
     keys={"spans": ["span_id"]},
-    sorted_by={"spans": [TableSortKey(column="start_time")]},
+    sorted_by={"spans": [hl.TableSortKey(column="start_time")]},
 )
 ```
 

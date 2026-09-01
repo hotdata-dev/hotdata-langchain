@@ -32,9 +32,11 @@ CATALOG_QUERY = (
     "WHERE table_schema <> 'information_schema'"
 )
 
-#: How a load treats the rows a table already holds. ``replace`` discards them;
-#: ``append`` keeps them; the remaining three match incoming rows against existing ones
-#: and so are legal only on a table that was declared with a key.
+#: How a load treats the rows a table already holds. ``replace`` discards them and
+#: ``append`` keeps them. The other three match an incoming row against an existing one
+#: by the table's declared key, so they are legal only on a table that has one:
+#: ``upsert`` replaces a matched row and inserts one that matches nothing, ``update``
+#: replaces a matched row only, and ``delete`` removes a matched row and inserts nothing.
 LoadMode = Literal["replace", "append", "upsert", "update", "delete"]
 
 #: Load modes that match rows by key, and so require one.
@@ -382,11 +384,12 @@ def load_managed_table(
     target. The default load replaces the table's contents, which is why addressing it
     unambiguously matters.
 
-    ``mode`` chooses what happens to rows already there. ``upsert``, ``update`` and
-    ``delete`` match incoming rows against existing ones, so they need ``key``, and they
-    are rejected unless the table was declared with one — which can only happen at
-    creation. Raises ``ValueError`` for a keyed mode called without ``key``, rather than
-    letting the engine reject it after the file has been uploaded.
+    ``mode`` chooses what happens to rows already there, and :data:`LoadMode` gives each
+    one's effect. The three keyed modes need ``key`` and are rejected unless the table was
+    declared with one, which can only happen at creation. Note that ``delete`` inserts
+    nothing: it uses the uploaded rows to choose which existing rows to remove. Raises
+    ``ValueError`` for a keyed mode called without ``key``, rather than letting the engine
+    reject it after the file has been uploaded.
     """
     if mode in KEYED_LOAD_MODES and not key:
         raise ValueError(

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import inspect
 import json
 import socket
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, NoReturn
-from unittest.mock import MagicMock
+from typing import Any, NoReturn, get_args
+from unittest.mock import MagicMock, create_autospec
 from urllib.request import Request
 
 import pytest
 from hotdata_framework import (
+    HotdataClient,
     LoadManagedTableResult,
     ManagedDatabase,
     QueryResult,
@@ -18,6 +20,7 @@ from hotdata_framework import (
 )
 
 from hotdata_langchain.databases import (
+    LoadMode,
     _ValidatingRedirectHandler,
     create_managed_database,
     fetch_parquet,
@@ -754,11 +757,23 @@ def test_the_destructive_marking_survives_a_tool_name_suffix(mock_client: MagicM
 
 
 def test_the_load_tool_offers_every_mode_to_the_model(mock_client: MagicMock) -> None:
-    """A mode absent from the schema is one the model cannot reach."""
+    """A mode absent from the schema is one the model cannot reach.
+
+    Read off `enum` rather than the serialised field: the field's description names every
+    mode in prose, so a substring check passes even with the enum gone.
+    """
     tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
-    schema = json.dumps(tools[DEFAULT_LOAD_TABLE_TOOL_NAME].args["mode"])
-    for mode in ("replace", "append", "upsert", "update", "delete"):
-        assert mode in schema
+    field = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].args["mode"]
+    assert set(field["enum"]) == set(get_args(LoadMode))
+
+
+def test_the_load_tool_says_what_each_keyed_mode_does(mock_client: MagicMock) -> None:
+    """Naming the three together without an effect reads as delete-then-insert by key."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    description = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].description or ""
+    assert "inserts one that matches nothing" in description
+    assert "replaces a matched row only" in description
+    assert "REMOVES a matched row and inserts nothing" in description
 
 
 def test_layout_reaches_the_helper_but_is_not_offered_to_the_model(
@@ -790,3 +805,45 @@ def test_the_load_tool_warns_against_repeating_a_failed_append(mock_client: Magi
     description = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].description or ""
     assert "append" in description
     assert "second time" in description
+
+
+def test_the_create_tool_refuses_a_key_on_a_table_it_is_not_declaring(
+    mock_client: MagicMock,
+) -> None:
+    """A key can only be set at creation, so one aimed at no declared table is lost."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    with pytest.raises(ValueError, match="not among the declared tables"):
+        tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].invoke(
+            {"name": "sales", "tables": "orders", "keys": {"ordres": ["id"]}}
+        )
+    mock_client.create_managed_database.assert_not_called()
+
+
+def test_every_provisioning_call_binds_to_the_real_client_signature() -> None:
+    """A MagicMock accepts any keyword, so it cannot catch one the framework rejects.
+
+    This is the failure `format` and `result_id` would have been: names that exist on the
+    request model but not on the client method that forwards it.
+    """
+    spec = create_autospec(HotdataClient, instance=True)
+    spec.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    spec.load_managed_table.return_value = LoadManagedTableResult(
+        connection_id="c1",
+        schema_name="public",
+        table_name="orders",
+        row_count=1,
+        full_name="sales.public.orders",
+    )
+    create_managed_database(
+        spec,
+        name="sales",
+        tables=["orders"],
+        keys={"orders": ["id"]},
+        expires_at="24h",
+        sorted_by={"orders": [TableSortKey(column="id")]},
+    )
+    inspect.signature(HotdataClient.create_managed_database).bind(
+        spec, **spec.create_managed_database.call_args.kwargs
+    )

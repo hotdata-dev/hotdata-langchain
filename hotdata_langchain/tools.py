@@ -612,6 +612,13 @@ def make_hotdata_tools(
                 something deletes it.
         """
         table_names = [t.strip() for t in tables.replace(",", "\n").splitlines() if t.strip()]
+        undeclared = sorted(set(keys or {}) - set(table_names))
+        if undeclared:
+            raise ValueError(
+                f"keys names {undeclared}, which is not among the declared tables "
+                f"{table_names}. A key can only be set when its table is declared, so a "
+                "key on a table that is not created here can never take effect."
+            )
         db = create_managed_database(
             client,
             name=name,
@@ -639,9 +646,11 @@ def make_hotdata_tools(
             file: a local filesystem path, or an http:// or https:// URL, to a parquet
                 file. Only parquet is accepted.
             schema_name: schema the table was declared in.
-            mode: what happens to rows already in the table. 'replace' discards them,
-                'append' keeps them, and 'upsert', 'update' and 'delete' match incoming
-                rows against existing ones by key.
+            mode: what happens to rows already in the table. 'replace' discards them and
+                'append' keeps them. The other three match an incoming row to an existing
+                one by the table's key. 'upsert' replaces a matched row and inserts one
+                that matches nothing, 'update' replaces a matched row only, and 'delete'
+                removes a matched row and inserts nothing.
             key: the key columns to match on, required by upsert, update and delete.
                 They must be the columns the table was declared with.
         """
@@ -762,10 +771,13 @@ def make_hotdata_tools(
                     description=(
                         "Load a parquet file into a table that was declared on an instant "
                         "database. By default this replaces whatever the table held; pass 'mode' "
-                        "to keep it. 'append' adds rows blindly, and 'upsert', 'update' and "
-                        "'delete' match incoming rows against existing ones, so they need 'key' "
-                        "and work only on a table that was declared with one. 'file' is either "
-                        "a path on "
+                        "to keep it. 'append' adds rows blindly. The other three match an "
+                        "incoming row to an existing one by key, so they need 'key' and work "
+                        "only on a table that was declared with one: 'upsert' replaces a matched "
+                        "row and inserts one that matches nothing, 'update' replaces a matched "
+                        "row only, and 'delete' REMOVES a matched row and inserts nothing — the "
+                        "rows you upload choose what is deleted, they are not added. "
+                        "'file' is either a path on "
                         "the local filesystem or an http:// or https:// URL, which is downloaded "
                         f"and uploaded for you{url_rule}. 'database_id' must be a database id "
                         f"returned by {list_name} or {create_name} — call one of those first if "

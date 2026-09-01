@@ -7,7 +7,14 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from hotdata_framework import HotdataClient, ManagedDatabase, QueryResult, from_env
+from hotdata_framework import (
+    HotdataClient,
+    ManagedDatabase,
+    QueryResult,
+    TablePartitionKey,
+    TableSortKey,
+    from_env,
+)
 
 from hotdata_langchain._sql import DISTANCE_FUNCTIONS, DistanceMetric
 from hotdata_langchain.databases import (
@@ -116,6 +123,8 @@ __all__ = [
     "SearchRoute",
     "SearchStrategy",
     "SearchableColumn",
+    "TablePartitionKey",
+    "TableSortKey",
     "__version__",
     "bm25_search_json",
     "bm25_search_sql",
