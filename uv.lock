@@ -259,7 +259,7 @@ wheels = [
 
 [[package]]
 name = "hotdata-framework"
-version = "0.12.1"
+version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hotdata" },
@@ -267,9 +267,9 @@ dependencies = [
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d7/b1/c44c520b861696cd138a5686e54fa3f0213ab35aede16a4fe0c4f5260915/hotdata_framework-0.12.1.tar.gz", hash = "sha256:86dd453f14ed3793cd2526b48cbb823b0d20d610fe784075debc74a544b99a5e", size = 126907, upload-time = "2026-08-18T13:11:54.76Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/96/ed80c234ce53d6f85205f2139026911439adec7cf131295b93895dafbc1b/hotdata_framework-0.13.0.tar.gz", hash = "sha256:7c5eddac64b2bcf9b20249b2a5f0821f0166ef4215a0a29f96ba1c29007c8c5a", size = 133203, upload-time = "2026-08-27T07:37:10.819Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b9/0e/2ab773f9b351b9bfc7753f723d6581e25cb498629d01be98d80acdf2bc7c/hotdata_framework-0.12.1-py3-none-any.whl", hash = "sha256:7fd12ff359570d1e0a23d5334de32f0765d3670c9ce65bb23a5b82cbd4e8895d", size = 24836, upload-time = "2026-08-18T13:11:53.31Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/79/4bcc8fb2f1698eac828878a1828b8b9dfa9900843e4c9e64f87041f94afd/hotdata_framework-0.13.0-py3-none-any.whl", hash = "sha256:735656e4d85730370daf1324fc99b20ed6e71261c36eb52034a635281a783908", size = 27273, upload-time = "2026-08-27T07:37:09.542Z" },
 ]
 
 [[package]]
@@ -306,7 +306,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "hotdata", specifier = ">=0.8.0" },
-    { name = "hotdata-framework", specifier = ">=0.10.0" },
+    { name = "hotdata-framework", specifier = ">=0.13.0" },
     { name = "langchain", marker = "extra == 'agents'", specifier = ">=1.0" },
     { name = "langchain-core", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=1.26" },

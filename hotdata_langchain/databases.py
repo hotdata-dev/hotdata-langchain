@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -19,6 +20,8 @@ from hotdata_framework import (
     HotdataClient,
     LoadManagedTableResult,
     ManagedDatabase,
+    TablePartitionKey,
+    TableSortKey,
 )
 from hotdata_framework.databases import api_error_message, managed_database_from_detail
 
@@ -166,6 +169,8 @@ def create_managed_database(
     tables: list[str] | None = None,
     keys: dict[str, list[str]] | None = None,
     expires_at: str | None = None,
+    partition_by: dict[str, Sequence[TablePartitionKey]] | None = None,
+    sorted_by: dict[str, Sequence[TableSortKey]] | None = None,
 ) -> ManagedDatabase:
     """Create an instant database, labelled ``name``.
 
@@ -179,6 +184,12 @@ def create_managed_database(
     ``"7d"``, after which the database is reaped. Without it the database lives until
     something deletes it, which makes lifetime a cleanup script's problem rather than a
     property of the thing created.
+
+    ``partition_by`` and ``sorted_by`` set a table's physical layout, and both are
+    permanent: the API has no ALTER path, so the only way to change one is to delete the
+    table and reload it, which burns the table name in that database. They are reachable
+    here and deliberately not offered to a model — see
+    :func:`~hotdata_langchain.tools.make_hotdata_tools`.
     """
     return client.create_managed_database(
         description=name,
@@ -186,6 +197,8 @@ def create_managed_database(
         tables=tables,
         keys=keys,
         expires_at=expires_at,
+        partition_by=partition_by,
+        sorted_by=sorted_by,
     )
 
 

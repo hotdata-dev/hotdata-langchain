@@ -10,7 +10,12 @@ from unittest.mock import MagicMock
 from urllib.request import Request
 
 import pytest
-from hotdata_framework import LoadManagedTableResult, ManagedDatabase, QueryResult
+from hotdata_framework import (
+    LoadManagedTableResult,
+    ManagedDatabase,
+    QueryResult,
+    TableSortKey,
+)
 
 from hotdata_langchain.databases import (
     _ValidatingRedirectHandler,
@@ -76,6 +81,8 @@ def test_create_managed_database_delegates(mock_client: MagicMock) -> None:
         tables=["orders"],
         keys=None,
         expires_at=None,
+        partition_by=None,
+        sorted_by=None,
     )
     assert db.description == "sales"
 
@@ -752,3 +759,34 @@ def test_the_load_tool_offers_every_mode_to_the_model(mock_client: MagicMock) ->
     schema = json.dumps(tools[DEFAULT_LOAD_TABLE_TOOL_NAME].args["mode"])
     for mode in ("replace", "append", "upsert", "update", "delete"):
         assert mode in schema
+
+
+def test_layout_reaches_the_helper_but_is_not_offered_to_the_model(
+    mock_client: MagicMock,
+) -> None:
+    """Layout is permanent and has no ALTER path, so the caller sets it, not the model."""
+    mock_client.create_managed_database.return_value = ManagedDatabase(
+        id="c1", description="sales", default_connection_id="conn_c1"
+    )
+    create_managed_database(
+        mock_client,
+        name="sales",
+        tables=["orders"],
+        sorted_by={"orders": [TableSortKey(column="id")]},
+    )
+    assert mock_client.create_managed_database.call_args.kwargs["sorted_by"] == {
+        "orders": [TableSortKey(column="id")]
+    }
+
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    offered = set(tools[DEFAULT_CREATE_DATABASE_TOOL_NAME].args)
+    assert {"keys", "expires_at"} <= offered
+    assert not offered & {"partition_by", "sorted_by"}
+
+
+def test_the_load_tool_warns_against_repeating_a_failed_append(mock_client: MagicMock) -> None:
+    """`handle_errors=True` hands the failure back to the model, which invites a retry."""
+    tools = {tool.name: tool for tool in make_hotdata_tools(mock_client)}
+    description = tools[DEFAULT_LOAD_TABLE_TOOL_NAME].description or ""
+    assert "append" in description
+    assert "second time" in description

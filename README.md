@@ -91,6 +91,28 @@ lifetime into a cleanup script rather than a property of the thing created.
 A keyed load with no `key` raises before the file is uploaded rather than after, since the
 engine would reject it at the far end of a transfer that had already happened.
 
+**Do not repeat a failed `append`.** Re-sending the same upload replays the server's receipt
+instead of applying the load twice, but a tool call has no memory across turns: a repeat stages
+a fresh upload, which has no receipt to replay, and the rows land a second time. `replace` and
+a keyed `upsert` both reach the same state however many times they run, so prefer those for
+anything an agent might retry — and `handle_errors=True` makes a retry likely, since the
+failure goes back to the model rather than ending the run.
+
+`partition_by` and `sorted_by` are on `hl.create_managed_database` but not on the create tool.
+Layout is permanent — the API has no ALTER path, and undoing a choice means deleting the table
+and reloading it, which burns the table name in that database — so it is set by whoever builds
+the tools, not chosen per call by a model:
+
+```python
+from hotdata_framework import TableSortKey
+
+db = hl.create_managed_database(
+    client, name="events", tables=["spans"],
+    keys={"spans": ["span_id"]},
+    sorted_by={"spans": [TableSortKey(column="start_time")]},
+)
+```
+
 ### Wiring approval around the tools that can destroy data
 
 `HumanInTheLoopMiddleware(interrupt_on=...)` is keyed by tool name, so the mutating set has to

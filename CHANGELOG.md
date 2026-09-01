@@ -30,14 +30,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names, so a set built with `tool_name_suffix` should be filtered on the metadata instead —
   the README shows both.
 
+- **`partition_by` and `sorted_by` on `hl.create_managed_database`.** Reachable from Python,
+  and deliberately not offered to a model: layout is permanent, the API has no ALTER path, and
+  undoing a choice means deleting the table and reloading it, which burns the table name in
+  that database. A model has no basis for choosing a partition transform and cannot undo a
+  wrong one.
+
+### Changed
+
+- **`hotdata-framework>=0.13.0`** (from `>=0.10.0`). 0.13.0 is where an `append` load became
+  retryable — before it, `append` was excluded from retries, so a load that hit
+  `409 RESOURCE_LOCKED` failed whatever `max_retries` was set to. This release makes `append`
+  reachable from a tool, so the floor moves with it. It also brings terminal-vs-transient 409
+  classification and `Retry-After` handling. The suite passes on every version from the old
+  floor to this one; the bump is about the failure modes the new load modes can hit, not a
+  broken build.
+
 ### Notes
 
-- Two parameters named in the issue this closes are not here, and neither is an oversight.
-  `partition_by` and `sorted_by` arrive on the framework client at **0.12.0**, while this
-  package declares `hotdata-framework>=0.10.0`; wrapping them needs that floor raised, which is
-  a separate decision. `format` and `result_id` exist on the `LoadManagedTableRequest` model but
-  on **no** released version of the framework client, so they need an upstream change rather
-  than a wider signature here.
+- `format` and `result_id` on the load are named in the issue this closes and are not here.
+  They exist on the `LoadManagedTableRequest` model but on **no** released version of the
+  framework client, which hardcodes the fields it forwards — so they need an upstream change
+  rather than a wider signature in this package.
+
+- Retrying a failed `append` from an agent still duplicates rows, and no version fixes that.
+  Re-sending the same upload replays the server's receipt, but a tool call has no memory across
+  turns, so a repeat stages a fresh upload with no receipt to replay. The load tool's
+  description now says so, and points at `replace` or a keyed `upsert` instead.
 
 ## [0.14.0] - 2026-08-31
 

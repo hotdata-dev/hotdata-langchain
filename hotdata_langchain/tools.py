@@ -489,7 +489,15 @@ def make_hotdata_tools(
     databases themselves — listing, creating and loading. Turn it off for an agent that
     reads one fixed database, where they are surface the model can only misuse. The flag
     is not called ``read_only``: listing databases is itself a read, so the set it removes
-    is the instant-database workflow rather than everything that writes.
+    is the instant-database workflow rather than everything that writes. The load tool
+    carries ``metadata={"destructive": True}``; :data:`DESTRUCTIVE_TOOL_NAMES` holds the
+    same set under the default names.
+
+    The create tool takes ``keys`` and ``expires_at`` but not ``partition_by`` or
+    ``sorted_by``, which :func:`~hotdata_langchain.databases.create_managed_database`
+    accepts. Layout is permanent — the API has no ALTER path, and undoing a choice means
+    deleting the table and reloading it, which burns the table name in that database —
+    so it is set by the caller building the tools, not chosen per call by a model.
 
     ``handle_errors`` returns each tool's failures as ``{"error": "<engine message>"}``
     instead of raising. An exception out of a tool aborts the whole agent run, so one
@@ -763,7 +771,11 @@ def make_hotdata_tools(
                         f"returned by {list_name} or {create_name} — call one of those first if "
                         "you do not have an id. A database name is rejected: "
                         "names are not unique, and this load overwrites the table, so the wrong "
-                        "target would destroy data. Only parquet is accepted, not CSV or JSON."
+                        "target would destroy data. Only parquet is accepted, not CSV or JSON. "
+                        "If a load fails without saying whether it landed, do not repeat it with "
+                        "mode='append': the retry adds the rows a second time. Re-run 'replace', "
+                        "or use 'upsert' with a key — both land the same rows however many "
+                        "times they run."
                     ),
                     parse_docstring=True,
                     metadata={"destructive": True},
