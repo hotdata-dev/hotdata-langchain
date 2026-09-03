@@ -7,8 +7,9 @@ import json
 import logging
 import socket
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -67,6 +68,11 @@ FETCH_TIMEOUT_SECONDS = 30.0
 FETCH_USER_AGENT = "hotdata-langchain"
 MAX_DOWNLOAD_BYTES = 1024**3
 DOWNLOAD_CHUNK_BYTES = 1024 * 256
+
+#: A stop on paging database listings, counted in records read rather than in distinct
+#: ids: a server repeating one page never grows the set of ids, so a set size would not
+#: terminate. A repeated cursor is caught separately.
+_MAX_DATABASES_SCANNED = 10_000
 
 
 def resolve_database_by_id(
@@ -327,6 +333,80 @@ def detach_catalog(
             f"detaching connection {connection_id!r} from database {identifier!r} "
             "reported no error, but the database still reports it as attached."
         )
+
+
+def database_expiry(
+    client: HotdataClient,
+    database_id: str | ManagedDatabase,
+) -> datetime | None:
+    """Return when ``database_id`` is due to be reaped, or ``None`` if it has no TTL.
+
+    A lifetime is *written* as a string, either an RFC 3339 timestamp or a relative window
+    such as ``"24h"``, and the server resolves it to an instant. So the resolved instant is
+    only ever knowable by reading it back: a caller that passed ``"24h"`` does not know
+    which second it lands on, and ``ManagedDatabase`` carries no ``expires_at`` to consult.
+
+    Raises ``KeyError`` when the workspace has no database with that id.
+    """
+    return _database_detail(client, database_id).expires_at
+
+
+def _database_summaries(client: HotdataClient) -> Iterator[Any]:
+    """Yield database summaries, following the listing cursor across pages.
+
+    ``list_databases`` is paginated, so reading one page reports a subset as if it were the
+    whole workspace. Two guards end paging before the listing does, each logging a warning
+    and returning what it has: a workspace past ``_MAX_DATABASES_SCANNED`` records, and a
+    cursor arriving a second time.
+    """
+    api = DatabasesApi(client.api)
+    cursor: str | None = None
+    scanned = 0
+    used: set[str] = set()
+    while True:
+        try:
+            listing = api.list_databases(cursor=cursor) if cursor else api.list_databases()
+        except ApiException as e:
+            raise RuntimeError(api_error_message(e)) from e
+        for summary in listing.databases or ():
+            yield summary
+            scanned += 1
+        cursor = listing.next_cursor
+        if not cursor or not listing.databases:
+            return
+        if cursor in used:
+            logger.warning(
+                "database listing returned cursor %r a second time; expiries are partial",
+                cursor,
+            )
+            return
+        used.add(cursor)
+        if scanned > _MAX_DATABASES_SCANNED:
+            logger.warning(
+                "stopped paging database listings after %d records; expiries are partial",
+                scanned,
+            )
+            return
+
+
+def database_expiries(client: HotdataClient) -> dict[str, datetime | None]:
+    """Return every instant database's expiry in the workspace, keyed by database id.
+
+    One call per page of the listing, rather than one call per database: the listing
+    response already carries ``expires_at``, so nothing here needs a per-database read.
+    A database with no TTL maps to ``None``, so a caller can tell "lives forever" from
+    "not in this workspace", which a missing key would not distinguish.
+
+    This reads the listing endpoint directly rather than going through
+    ``client.list_managed_databases()``, which drops ``expires_at``, fetches every database
+    individually, and silently omits any whose detail read fails.
+
+    **The result can be a subset, and the only notice is a log line.** Paging stops early
+    on two guards: a workspace past 10,000 records, and a listing that returns a cursor it
+    already gave. Each logs a warning and returns what it has, so a caller that must know
+    the read was complete has to watch the log rather than the return value.
+    """
+    return {str(one.id): one.expires_at for one in _database_summaries(client)}
 
 
 def list_managed_databases_json(client: HotdataClient) -> str:

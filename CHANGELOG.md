@@ -37,9 +37,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `description` and `default_connection_id`, so a caller holding a resolved record could not ask
   what was attached to it. This reads the fields that record drops.
 
-These are Python helpers and deliberately not tools. Whether provisioning of this kind should be
-agent-callable is the open question in
-[#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61), and nothing here settles it.
+- **`hl.database_expiry` and `hl.database_expiries`.** A lifetime is *written* as a string,
+  either an RFC 3339 timestamp or a relative window such as `"24h"`, and the server resolves it
+  to an instant. So the resolved time is only knowable by reading it back, and nothing in this
+  package could: `ManagedDatabase` carries no `expires_at`. A caller could set a TTL and then not
+  learn which second it landed on, or whether a database still had one at all.
+
+  `database_expiries` returns the workspace keyed by database id, at one request per page of the
+  listing rather than one per database, because the listing response already carries the field. A
+  database with no TTL maps to `None`, so "lives forever" stays distinguishable from "not in this
+  workspace". It reads the listing endpoint directly, since `client.list_managed_databases()`
+  drops `expires_at`, reads every database individually, and silently omits any whose detail read
+  fails.
+
+  The listing is paginated and the cursor is followed, so a workspace larger than one page is not
+  reported as complete after one read. Two guards stop paging early and log a warning rather than
+  raising: a workspace past 10,000 records, and a listing that repeats a cursor it already gave.
+  A caller that must know the read was complete has to watch the log, not the return value.
+
+  Reaping happens from the TTL or from an explicit cleanup step, so an unexplained timestamp in
+  a tool result would be surface a model can only misuse.
+
+Everything above is a Python helper, and none of it reaches a tool. For the attach pair, whether
+provisioning should be agent-callable at all is the open question in
+[#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61), which this release does not
+settle. For the read-back helpers it is simpler: a model has no decision to make with either
+value.
 
 ## [0.15.0] - 2026-09-01
 
