@@ -54,11 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reaping happens from the TTL or from an explicit cleanup step, so an unexplained timestamp in
   a tool result would be surface a model can only misuse.
 
-Everything above is a Python helper, and none of it reaches a tool. For the attach pair that is
-the open question in
-[#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61) — whether provisioning should be
-agent-callable at all — which this release does not settle. For the read-back helpers it is
-simpler: a model has no decision to make with either value.
+Everything above is a Python helper, and none of it reaches a tool. For the attach pair, whether
+provisioning should be agent-callable at all is the open question in
+[#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61), which this release does not
+settle. For the read-back helpers it is simpler: a model has no decision to make with either
+value.
 
 ## [0.15.0] - 2026-09-01
 

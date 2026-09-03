@@ -16,7 +16,11 @@ import pytest
 from hotdata.exceptions import ApiException
 from hotdata_framework import ManagedDatabase
 
-from hotdata_langchain.databases import database_expiries, database_expiry
+from hotdata_langchain.databases import (
+    _MAX_DATABASES_SCANNED,
+    database_expiries,
+    database_expiry,
+)
 
 REAPED_AT = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -148,3 +152,63 @@ def test_a_listing_failure_surfaces_the_api_message(mock_client: MagicMock, api:
     )
     with pytest.raises(RuntimeError, match="workspace does not permit listing"):
         database_expiries(mock_client)
+
+
+# --- termination, which the cap alone did not guarantee -----------------------------
+
+
+def test_a_server_repeating_one_cursor_forever_terminates(
+    mock_client: MagicMock, api: MagicMock
+) -> None:
+    """The same page and the same cursor on every request must not spin the loop.
+
+    Counting distinct ids would not stop this: the id set never grows past one page.
+    """
+    api.return_value.list_databases.return_value = page(
+        summary("db1", None), next_cursor="always-the-same"
+    )
+
+    assert database_expiries(mock_client) == {"db1": None}
+    assert api.return_value.list_databases.call_count == 2
+
+
+def test_a_server_cycling_between_two_cursors_terminates(
+    mock_client: MagicMock, api: MagicMock
+) -> None:
+    cursors = ["a", "b", "a", "b"]
+    api.return_value.list_databases.side_effect = [
+        page(summary(f"db{i}", None), next_cursor=c) for i, c in enumerate(cursors)
+    ]
+
+    result = database_expiries(mock_client)
+
+    assert api.return_value.list_databases.call_count == 3
+    assert result == {"db0": None, "db1": None, "db2": None}
+
+
+def test_paging_stops_once_the_record_cap_is_passed(mock_client: MagicMock, api: MagicMock) -> None:
+    """A fresh cursor each time, so only the record count can end this."""
+    counter = iter(range(10**6))
+
+    def one_page(cursor: str | None = None) -> SimpleNamespace:
+        n = next(counter)
+        return page(summary(f"db{n}", None), next_cursor=f"cursor-{n}")
+
+    api.return_value.list_databases.side_effect = one_page
+
+    result = database_expiries(mock_client)
+
+    assert len(result) == _MAX_DATABASES_SCANNED + 1
+
+
+def test_the_cursor_is_never_reused_across_requests(mock_client: MagicMock, api: MagicMock) -> None:
+    api.return_value.list_databases.side_effect = [
+        page(summary("db1", None), next_cursor="c1"),
+        page(summary("db2", None), next_cursor="c2"),
+        page(summary("db3", None)),
+    ]
+
+    database_expiries(mock_client)
+
+    sent = [c.kwargs.get("cursor") for c in api.return_value.list_databases.call_args_list]
+    assert sent == [None, "c1", "c2"]

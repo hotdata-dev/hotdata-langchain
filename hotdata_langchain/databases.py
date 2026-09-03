@@ -67,11 +67,12 @@ PARQUET_MAGIC = b"PAR1"
 FETCH_TIMEOUT_SECONDS = 30.0
 FETCH_USER_AGENT = "hotdata-langchain"
 MAX_DOWNLOAD_BYTES = 1024**3
-
-#: A stop on paging database listings, so a server that keeps returning a cursor cannot
-#: spin this forever.
-_MAX_DATABASES_SCANNED = 10_000
 DOWNLOAD_CHUNK_BYTES = 1024 * 256
+
+#: A stop on paging database listings, counted in records read rather than in distinct
+#: ids: a server repeating one page never grows the set of ids, so a set size would not
+#: terminate. A repeated cursor is caught separately.
+_MAX_DATABASES_SCANNED = 10_000
 
 
 def resolve_database_by_id(
@@ -358,7 +359,8 @@ def _database_summaries(client: HotdataClient) -> Iterator[Any]:
     """
     api = DatabasesApi(client.api)
     cursor: str | None = None
-    seen: set[str] = set()
+    scanned = 0
+    used: set[str] = set()
     while True:
         try:
             listing = api.list_databases(cursor=cursor) if cursor else api.list_databases()
@@ -366,16 +368,21 @@ def _database_summaries(client: HotdataClient) -> Iterator[Any]:
             raise RuntimeError(api_error_message(e)) from e
         for summary in listing.databases or ():
             yield summary
-            seen.add(str(summary.id))
-        cursor = getattr(listing, "next_cursor", None)
-        # has_more alone has been seen paired with no cursor; without this the loop would
-        # either stop early or repeat the first page forever.
+            scanned += 1
+        cursor = listing.next_cursor
         if not cursor or not listing.databases:
             return
-        if len(seen) > _MAX_DATABASES_SCANNED:
+        if cursor in used:
+            logger.warning(
+                "database listing returned cursor %r a second time; expiries are partial",
+                cursor,
+            )
+            return
+        used.add(cursor)
+        if scanned > _MAX_DATABASES_SCANNED:
             logger.warning(
                 "stopped paging database listings after %d records; expiries are partial",
-                len(seen),
+                scanned,
             )
             return
 
