@@ -853,6 +853,11 @@ print(hl.database_expiries(client))         # {database_id: datetime | None} for
 because the listing already carries the field. A database with no TTL maps to `None`, which keeps
 "lives forever" distinguishable from "not in this workspace".
 
+The cursor is followed across pages, so one read does not pass off a subset as the whole
+workspace. Two guards stop it early and log a warning instead of raising: more than 10,000
+records, or a listing that repeats a cursor. If you need certainty that the read was complete,
+watch the log rather than the returned mapping.
+
 Neither is on a tool. Reaping runs from the TTL or from your own cleanup step, so a model has no
 decision to make with the value.
 

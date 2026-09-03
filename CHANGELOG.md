@@ -43,13 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package could: `ManagedDatabase` carries no `expires_at`. A caller could set a TTL and then not
   learn which second it landed on, or whether a database still had one at all.
 
-  `database_expiries` returns the whole workspace keyed by database id, at one request per page of
-  the listing rather than one per database, because the listing response already carries the
-  field. A database with no TTL maps to `None`, so "lives forever" stays distinguishable from
-  "not in this workspace". It reads the listing endpoint directly, since
-  `client.list_managed_databases()` drops `expires_at`, reads every database individually, and
-  silently omits any whose detail read fails. The listing is paginated and the cursor is followed,
-  so a workspace larger than one page does not report a subset as if it were complete.
+  `database_expiries` returns the workspace keyed by database id, at one request per page of the
+  listing rather than one per database, because the listing response already carries the field. A
+  database with no TTL maps to `None`, so "lives forever" stays distinguishable from "not in this
+  workspace". It reads the listing endpoint directly, since `client.list_managed_databases()`
+  drops `expires_at`, reads every database individually, and silently omits any whose detail read
+  fails.
+
+  The listing is paginated and the cursor is followed, so a workspace larger than one page is not
+  reported as complete after one read. Two guards stop paging early and log a warning rather than
+  raising: a workspace past 10,000 records, and a listing that repeats a cursor it already gave.
+  A caller that must know the read was complete has to watch the log, not the return value.
 
   Reaping happens from the TTL or from an explicit cleanup step, so an unexplained timestamp in
   a tool result would be surface a model can only misuse.

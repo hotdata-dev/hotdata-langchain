@@ -352,10 +352,12 @@ def database_expiry(
 
 
 def _database_summaries(client: HotdataClient) -> Iterator[Any]:
-    """Yield every database summary in the workspace, following the cursor.
+    """Yield database summaries, following the listing cursor across pages.
 
     ``list_databases`` is paginated, so reading one page reports a subset as if it were the
-    whole workspace.
+    whole workspace. Two guards end paging before the listing does, each logging a warning
+    and returning what it has: a workspace past ``_MAX_DATABASES_SCANNED`` records, and a
+    cursor arriving a second time.
     """
     api = DatabasesApi(client.api)
     cursor: str | None = None
@@ -398,6 +400,11 @@ def database_expiries(client: HotdataClient) -> dict[str, datetime | None]:
     This reads the listing endpoint directly rather than going through
     ``client.list_managed_databases()``, which drops ``expires_at``, fetches every database
     individually, and silently omits any whose detail read fails.
+
+    **The result can be a subset, and the only notice is a log line.** Paging stops early
+    on two guards: a workspace past 10,000 records, and a listing that returns a cursor it
+    already gave. Each logs a warning and returns what it has, so a caller that must know
+    the read was complete has to watch the log rather than the return value.
     """
     return {str(one.id): one.expires_at for one in _database_summaries(client)}
 
