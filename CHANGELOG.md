@@ -33,6 +33,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Connection '<id>' is scoped to another database`); the refusal is passed through with its
   message intact. A registered data source is what attaches.
 
+- **`hl.database_expiry` and `hl.database_expiries`.** A lifetime is *written* as a string,
+  either an RFC 3339 timestamp or a relative window such as `"24h"`, and the server resolves it
+  to an instant. So the resolved time is only knowable by reading it back, and nothing in this
+  package could: `ManagedDatabase` carries no `expires_at`. A caller could set a TTL and then not
+  learn which second it landed on, or whether a database still had one at all.
+
+  `database_expiries` returns the whole workspace keyed by database id, at one request per page of
+  the listing rather than one per database, because the listing response already carries the
+  field. A database with no TTL maps to `None`, so "lives forever" stays distinguishable from
+  "not in this workspace". It reads the listing endpoint directly, since
+  `client.list_managed_databases()` drops `expires_at`, reads every database individually, and
+  silently omits any whose detail read fails. The listing is paginated and the cursor is followed,
+  so a workspace larger than one page does not report a subset as if it were complete.
+
+  Not on any tool. Reaping happens from the TTL or from an explicit cleanup step, so a model has
+  no decision to make with the value, and an unexplained timestamp in a tool result is surface it
+  can only misuse.
+
 - **`hl.database_attachments` and `CatalogAttachment`.** `ManagedDatabase` carries only `id`,
   `description` and `default_connection_id`, so a caller holding a resolved record could not ask
   what was attached to it. This reads the fields that record drops.

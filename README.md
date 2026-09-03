@@ -838,6 +838,24 @@ These are Python helpers, not tools. Whether an agent should be able to attach a
 is [#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61)'s open question, and this
 does not answer it.
 
+## Reading back when a database expires
+
+`expires_at` is written as a string, either an RFC 3339 timestamp or a relative window like
+`"24h"`, and the server resolves it to an instant. A caller that passed `"24h"` therefore does
+not know which second it lands on, and `ManagedDatabase` carries no `expires_at` to consult:
+
+```python
+print(hl.database_expiry(client, db))       # datetime, or None when it has no TTL
+print(hl.database_expiries(client))         # {database_id: datetime | None} for the workspace
+```
+
+`database_expiries` costs one request per page of the database listing, not one per database,
+because the listing already carries the field. A database with no TTL maps to `None`, which keeps
+"lives forever" distinguishable from "not in this workspace".
+
+Neither is on a tool. Reaping runs from the TTL or from your own cleanup step, so a model has no
+decision to make with the value.
+
 ## Controlling result size
 
 Limit how many rows are returned to the LLM. Useful for keeping responses within context limits (default: 100):
