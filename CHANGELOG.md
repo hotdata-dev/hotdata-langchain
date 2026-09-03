@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-03
+
 ### Added
 
 - **`hl.attach_catalog` and `hl.detach_catalog`.** An instant database could only ever read its
@@ -63,6 +65,21 @@ provisioning should be agent-callable at all is the open question in
 [#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61), which this release does not
 settle. For the read-back helpers it is simpler: a model has no decision to make with either
 value.
+
+### Notes
+
+- **Only a Postgres connection has been observed attaching.** The API constrains the attachment
+  request to a `connection_id`, and a connection's `source_type` is an unconstrained string, so
+  nothing in the request shape limits which registered sources can be attached. What was measured
+  is one Postgres connection, attached into an instant database, returning rows through its alias.
+  Treat any other source type as unverified rather than unsupported.
+
+- **`attach_database_catalog` and `detach_database_catalog` are on no released
+  `hotdata-framework` client**, so these helpers call `DatabasesApi` through the client's public
+  `api` property, which is the same construction the framework makes internally. Tracked upstream
+  as [sdk-python-framework#81](https://github.com/hotdata-dev/sdk-python-framework/issues/81),
+  along with `managed_database_from_detail` discarding `attachments`, `default_catalog`,
+  `default_schema` and `expires_at`. When those land, these helpers become thin delegations.
 
 ## [0.15.0] - 2026-09-01
 
