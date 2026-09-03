@@ -264,7 +264,7 @@ def attach_catalog(
         if e.status == 404:
             raise KeyError(
                 f"no instant database with id {identifier!r} in this workspace, or no "
-                f"connection {connection_id!r} registered in it."
+                f"connection {connection_id!r} registered in this workspace."
             ) from e
         if e.status == 409:
             existing = _attached_connection(client, identifier, connection_id)
