@@ -424,8 +424,11 @@ SQL does what the tool does.
 
 An instant database's tables read as `default.<schema>.<table>`. An **attached** source's do
 not — its tables answer to the attachment's alias, and `default.<schema>.<table>` is not
-found there. Nothing on the database record distinguishes the two, so there is no constant
-the tools can assume.
+found there. A resolved `ManagedDatabase` distinguishes nothing here, since it carries neither
+the attachments nor the default catalog, and `default_catalog` reports `default` whether or not
+anything answers to that name. `hl.database_attachments` will name what is attached, but that
+is not the same question: it says which sources are attached, not which catalogs actually hold
+tables. So there is no constant the tools can assume.
 
 `make_hotdata_tools` therefore reads the catalog from `information_schema` once, when the
 tools are built, and states it in the SQL tool's description — so the model is told the real
@@ -783,8 +786,57 @@ the instant-database tools act on the workspace, so naming one database in them 
 `management_tools=False` on the extra sets is worth it for the same reason: listing, creating
 and loading databases are workspace-wide, so a second copy of them is redundant surface.
 
-Note that a query cannot reach across databases: `SELECT ... FROM other_db.public.t` from within
-one database's scope fails with `table not found`. Each set queries its own.
+Note that a query cannot reach from one instant database into another: `SELECT ... FROM
+other_db.public.t` from within one database's scope fails with `table not found`, and the
+platform refuses attaching one instant database into another to get around it. Each set queries
+its own. A *registered data source* is a different matter — see below.
+
+## Attaching another source into a database's scope
+
+A registered connection can be attached into an instant database, which puts its tables in the
+same query scope as the database's own. That is how one query reads across the boundary:
+
+```python
+attachment = hl.attach_catalog(client, db, connection_id="conn...", alias="warehouse")
+print(attachment.alias)  # the catalog name SQL has to address
+```
+
+Its tables are then addressable as `warehouse.public.orders` alongside the database's own
+tables, and a query can join the two. `hl.detach_catalog(client, db, connection_id="conn...")`
+removes the attachment; the connection stays registered and its data is untouched, so this is
+reversible.
+
+**Pass `alias=` if you need to know the name in advance.** Left unset, the server chooses it —
+so `attach_catalog` returns the attachment that landed rather than echoing what was asked for,
+and that is the name to address.
+
+Both calls answer 204 with no body, so a refusal raises and there is nothing ambiguous to read.
+What that does not cover is a 204 that did not take effect, so each one re-reads the database
+afterwards and raises if the attachment did not land, or if a detached connection is still
+listed. Pass `confirm=False` to skip the extra request — the returned `alias` is then the one
+you asked for rather than the one that landed.
+
+Attaching a connection that is already attached is a no-op rather than an error, so re-running a
+provisioning step is safe.
+
+To ask what a database already has attached:
+
+```python
+for one in hl.database_attachments(client, db):
+    print(one.connection_id, one.alias)
+```
+
+This is a separate call because `ManagedDatabase` carries only `id`, `description` and
+`default_connection_id` — a resolved record cannot answer the question on its own.
+
+A database with something attached exposes more than one catalog, and the SQL tool's description
+changes to match: instead of naming a single catalog it tells the model to read `table_catalog`
+from `information_schema.tables` to see which one holds a table. Nothing extra is needed to make
+that happen — build the tools after attaching.
+
+These are Python helpers, not tools. Whether an agent should be able to attach a source itself
+is [#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61)'s open question, and this
+does not answer it.
 
 ## Controlling result size
 

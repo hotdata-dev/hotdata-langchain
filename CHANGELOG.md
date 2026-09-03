@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`hl.attach_catalog` and `hl.detach_catalog`.** An instant database could only ever read its
+  own tables from this package: every tool set is scoped to one database and there was no way to
+  bring a second source into that scope without dropping out of the library to the raw SDK.
+  Attaching a registered connection makes its tables addressable as `<alias>.<schema>.<table>`
+  alongside the database's own, which the SQL tool description already knows how to describe —
+  it just had no way to produce that state. `attach_catalog` returns the attachment that landed
+  rather than the one requested, because the alias is the server's choice when it is not given
+  and SQL has to address the name that exists.
+
+  Both endpoints answer 204 with no body, so a refusal raises and there is nothing ambiguous
+  to inspect. What a status code cannot cover is a 204 that did not do the work, so both helpers
+  re-read the database and raise if the attachment did not land, or if a detached connection is
+  still listed. That shape is not hypothetical on this platform — `delete_managed_table` reports
+  success while leaving a registration behind — though it has not been observed for an attach.
+  Pass `confirm=False` to skip the extra request.
+
+  A 409 from the attach is resolved by reading rather than assumed to mean "already attached": if
+  the connection turns out to be attached, its existing attachment is returned, so re-running a
+  provisioning step is a no-op instead of an error.
+
+  Attaching one instant database into another is refused by the platform
+  (`Connection '<id>' is scoped to another database`); the refusal is passed through with its
+  message intact. A registered data source is what attaches.
+
+- **`hl.database_attachments` and `CatalogAttachment`.** `ManagedDatabase` carries only `id`,
+  `description` and `default_connection_id`, so a caller holding a resolved record could not ask
+  what was attached to it. This reads the fields that record drops.
+
+These are Python helpers and deliberately not tools. Whether provisioning of this kind should be
+agent-callable is the open question in
+[#61](https://github.com/hotdata-dev/hotdata-langchain/issues/61), and nothing here settles it.
+
 ## [0.15.0] - 2026-09-01
 
 ### Added

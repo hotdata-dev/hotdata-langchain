@@ -385,10 +385,27 @@ record — nothing in `information_schema` marks the generated column as generat
   call; the same client read from two different instant databases in one session.
 - **Cross-database references inside a single query fail** by default:
   `SELECT id FROM f1_db.public.drivers` from within another database's scope gives
-  `table 'f1_db.public.drivers' not found`. `DatabasesApi` does expose
-  `attach_database_catalog`/`detach_database_catalog`, and `bm25_search`'s scope resolution
-  translates "an attachment alias or `default`", so attachment is presumably the supported route
-  — **not verified here**.
+  `table 'f1_db.public.drivers' not found`.
+
+- **Attachment is the supported route across that boundary, but only for a registered source**
+  (verified 2026-08-31/09-01 against the live workspace, through `DatabasesApi` directly):
+
+  | Attempt | Result |
+  |---|---|
+  | attach instant database A into instant database B | **refused** — `Connection '<id>' is scoped to another database and cannot be attached here` |
+  | load a `result_id` from A's query into a table in A | accepted, 1 row landed |
+  | load that same `result_id` into B | **refused** — `Result '<id>' not found` |
+  | attach a **Postgres connection** into an instant database | accepted |
+  | `SELECT * FROM <alias>.public.drivers` through that alias | **859 rows**, from inside the instant database's scope |
+
+  So two instant databases cannot see each other by any route, and the earlier guess that
+  attachment was "presumably the supported route" was half right: it is the route, and it does
+  not work for another instant database. `ResultsApi.get_result` requires an `x_database_id`,
+  which is the same boundary expressed in a signature.
+
+  `hl.attach_catalog`/`hl.detach_catalog` wrap that same endpoint pair. The endpoints are
+  verified as above; **the helpers themselves have not been exercised against a live
+  workspace.**
 - **Database names are not unique.** `name` is a display label; `resolve_managed_database` tries
   the id first and then scans `list_databases()` matching on name. Ids are the only safe handle,
   so this package never calls that resolver: `resolve_database_by_id` goes straight to

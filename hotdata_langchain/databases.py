@@ -8,6 +8,7 @@ import logging
 import socket
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -15,6 +16,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from hotdata.api.databases_api import DatabasesApi
 from hotdata.exceptions import ApiException
+from hotdata.models.attach_database_catalog_request import AttachDatabaseCatalogRequest
+from hotdata.models.database_detail_response import DatabaseDetailResponse
 from hotdata_framework import (
     DEFAULT_SCHEMA,
     HotdataClient,
@@ -26,6 +29,22 @@ from hotdata_framework import (
 from hotdata_framework.databases import api_error_message, managed_database_from_detail
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CatalogAttachment:
+    """A data source attached into an instant database's query scope.
+
+    ``alias`` is the catalog name the attached tables answer to in SQL, so a query reads
+    ``<alias>.<schema>.<table>``. The API declares it optional, so it can be ``None``.
+    Attaching without one leaves the naming to the server, which is why
+    :func:`attach_catalog` reports back the attachment it read rather than echoing what
+    was asked for.
+    """
+
+    connection_id: str
+    alias: str | None
+
 
 CATALOG_QUERY = (
     "SELECT DISTINCT table_catalog FROM information_schema.tables "
@@ -69,17 +88,7 @@ def resolve_database_by_id(
     """
     if isinstance(database_id, ManagedDatabase):
         return database_id
-    try:
-        detail = DatabasesApi(client.api).get_database(database_id)
-    except ApiException as e:
-        if e.status == 404:
-            raise KeyError(
-                f"no instant database with id {database_id!r} in this workspace. "
-                "Ids are listed by hotdata_list_managed_databases; a database name is "
-                "not accepted here, because names are not unique."
-            ) from e
-        raise RuntimeError(api_error_message(e)) from e
-    return managed_database_from_detail(detail)
+    return managed_database_from_detail(_database_detail(client, database_id))
 
 
 def query_scope(database: ManagedDatabase | None) -> ManagedDatabase | None:
@@ -151,6 +160,173 @@ def query_catalogs(client: HotdataClient, database: ManagedDatabase) -> list[str
         )
         return []
     return catalogs
+
+
+def _database_id(database_id: str | ManagedDatabase) -> str:
+    return database_id.id if isinstance(database_id, ManagedDatabase) else database_id
+
+
+def _no_such_database(identifier: str) -> KeyError:
+    return KeyError(
+        f"no instant database with id {identifier!r} in this workspace. "
+        "Ids are listed by hotdata_list_managed_databases; a database name is "
+        "not accepted here, because names are not unique."
+    )
+
+
+def _database_detail(
+    client: HotdataClient, database_id: str | ManagedDatabase
+) -> DatabaseDetailResponse:
+    identifier = _database_id(database_id)
+    try:
+        return DatabasesApi(client.api).get_database(identifier)
+    except ApiException as e:
+        if e.status == 404:
+            raise _no_such_database(identifier) from e
+        raise RuntimeError(api_error_message(e)) from e
+
+
+def database_attachments(
+    client: HotdataClient,
+    database_id: str | ManagedDatabase,
+) -> list[CatalogAttachment]:
+    """Return the data sources attached into ``database_id``'s query scope.
+
+    ``GET /databases/{id}`` reports these, but ``ManagedDatabase`` carries only ``id``,
+    ``description`` and ``default_connection_id`` — so a caller holding a resolved record
+    cannot ask what is attached to it. This re-reads the detail response for the fields
+    that record drops.
+
+    A database with nothing attached returns an empty list. Raises ``KeyError`` when the
+    workspace has no database with that id.
+    """
+    detail = _database_detail(client, database_id)
+    return [
+        CatalogAttachment(connection_id=str(one.connection_id), alias=one.alias)
+        for one in detail.attachments or ()
+    ]
+
+
+def _attached_connection(
+    client: HotdataClient,
+    identifier: str,
+    connection_id: str,
+) -> CatalogAttachment | None:
+    """Return ``connection_id``'s attachment on ``identifier``, or ``None`` if absent."""
+    for one in database_attachments(client, identifier):
+        if one.connection_id == connection_id:
+            return one
+    return None
+
+
+def attach_catalog(
+    client: HotdataClient,
+    database_id: str | ManagedDatabase,
+    *,
+    connection_id: str,
+    alias: str | None = None,
+    confirm: bool = True,
+) -> CatalogAttachment:
+    """Attach a registered connection into an instant database, as a second catalog.
+
+    This is what makes one database read across a boundary: the attached source's tables
+    become addressable as ``<alias>.<schema>.<table>`` inside ``database_id``'s scope,
+    alongside its own. ``connection_id`` is a registered data source, not another instant
+    database — the platform refuses a managed database's own connection here with
+    "scoped to another database and cannot be attached".
+
+    ``alias`` names the catalog in SQL. Left unset the server chooses it, so read the
+    returned attachment rather than assuming the name.
+
+    The endpoint answers 204 with no body, so a failure raises rather than returning
+    anything to inspect. ``confirm`` adds a read-back on top of that, which covers the one
+    case the status code cannot: a 204 that did not do the work. That shape is not
+    hypothetical here — ``delete_managed_table`` reports success while leaving a
+    registration behind — though it has not been observed for an attach. Pass
+    ``confirm=False`` to skip the extra request, and note that the returned ``alias`` is
+    then the one asked for rather than the one that landed.
+
+    A 409 is resolved by reading rather than assumed: if the connection turns out to be
+    attached already, its existing attachment is returned, so re-running a provisioning
+    step is a no-op instead of an error.
+
+    Raises ``KeyError`` when the database or the connection does not exist — a 404 here
+    does not say which, so the message names both — and ``RuntimeError`` when the attach
+    is refused or reports success without landing.
+    """
+    identifier = _database_id(database_id)
+    try:
+        DatabasesApi(client.api).attach_database_catalog(
+            identifier,
+            AttachDatabaseCatalogRequest(connection_id=connection_id, alias=alias),
+        )
+    except ApiException as e:
+        if e.status == 404:
+            raise KeyError(
+                f"no instant database with id {identifier!r} in this workspace, or no "
+                f"connection {connection_id!r} registered in this workspace."
+            ) from e
+        if e.status == 409:
+            existing = _attached_connection(client, identifier, connection_id)
+            if existing is not None:
+                logger.debug(
+                    "connection %s is already attached to database %s as %r",
+                    connection_id,
+                    identifier,
+                    existing.alias,
+                )
+                return existing
+        raise RuntimeError(api_error_message(e)) from e
+
+    if not confirm:
+        return CatalogAttachment(connection_id=connection_id, alias=alias)
+    landed = _attached_connection(client, identifier, connection_id)
+    if landed is None:
+        raise RuntimeError(
+            f"attaching connection {connection_id!r} to database {identifier!r} reported "
+            "no error, but the database reports it is not attached. Pass confirm=False to "
+            "accept the call's own result instead of this read-back."
+        )
+    return landed
+
+
+def detach_catalog(
+    client: HotdataClient,
+    database_id: str | ManagedDatabase,
+    *,
+    connection_id: str,
+    confirm: bool = True,
+) -> None:
+    """Detach a connection from an instant database's query scope.
+
+    Removes the attachment only. The connection itself stays registered in the workspace
+    and any data it holds is untouched, so this is reversible by attaching again — unlike
+    deleting a table, which burns its name.
+
+    ``confirm`` re-reads the database and raises if the connection is still attached, for
+    the same reason :func:`attach_catalog` does: 204 says the call was accepted, not that
+    it took effect. Pass ``confirm=False`` to skip the extra request.
+
+    A 404 covers both "no such database" and "that connection is not attached to it", and
+    the two are not distinguishable from the response, so the ``KeyError`` names both
+    rather than asserting one.
+    """
+    identifier = _database_id(database_id)
+    try:
+        DatabasesApi(client.api).detach_database_catalog(identifier, connection_id)
+    except ApiException as e:
+        if e.status == 404:
+            raise KeyError(
+                f"no instant database with id {identifier!r} in this workspace, or no "
+                f"connection {connection_id!r} attached to it."
+            ) from e
+        raise RuntimeError(api_error_message(e)) from e
+
+    if confirm and _attached_connection(client, identifier, connection_id) is not None:
+        raise RuntimeError(
+            f"detaching connection {connection_id!r} from database {identifier!r} "
+            "reported no error, but the database still reports it as attached."
+        )
 
 
 def list_managed_databases_json(client: HotdataClient) -> str:
