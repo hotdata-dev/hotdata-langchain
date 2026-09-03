@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-03
+
 ### Added
 
 - **`hl.attach_catalog` and `hl.detach_catalog`.** An instant database could only ever read its
