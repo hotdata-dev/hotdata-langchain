@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from hotdata.api.databases_api import DatabasesApi
 from hotdata.exceptions import ApiException
 from hotdata.models.attach_database_catalog_request import AttachDatabaseCatalogRequest
+from hotdata.models.database_detail_response import DatabaseDetailResponse
 from hotdata_framework import (
     DEFAULT_SCHEMA,
     HotdataClient,
@@ -35,9 +36,10 @@ class CatalogAttachment:
     """A data source attached into an instant database's query scope.
 
     ``alias`` is the catalog name the attached tables answer to in SQL, so a query reads
-    ``<alias>.<schema>.<table>``. It is ``None`` when the attachment was made without one
-    and the server chose the name, which is why :func:`attach_catalog` reports back what
-    landed rather than echoing what was asked for.
+    ``<alias>.<schema>.<table>``. The API declares it optional, so it can be ``None``.
+    Attaching without one leaves the naming to the server, which is why
+    :func:`attach_catalog` reports back the attachment it read rather than echoing what
+    was asked for.
     """
 
     connection_id: str
@@ -164,17 +166,23 @@ def _database_id(database_id: str | ManagedDatabase) -> str:
     return database_id.id if isinstance(database_id, ManagedDatabase) else database_id
 
 
-def _database_detail(client: HotdataClient, database_id: str | ManagedDatabase) -> Any:
+def _no_such_database(identifier: str) -> KeyError:
+    return KeyError(
+        f"no instant database with id {identifier!r} in this workspace. "
+        "Ids are listed by hotdata_list_managed_databases; a database name is "
+        "not accepted here, because names are not unique."
+    )
+
+
+def _database_detail(
+    client: HotdataClient, database_id: str | ManagedDatabase
+) -> DatabaseDetailResponse:
     identifier = _database_id(database_id)
     try:
         return DatabasesApi(client.api).get_database(identifier)
     except ApiException as e:
         if e.status == 404:
-            raise KeyError(
-                f"no instant database with id {identifier!r} in this workspace. "
-                "Ids are listed by hotdata_list_managed_databases; a database name is "
-                "not accepted here, because names are not unique."
-            ) from e
+            raise _no_such_database(identifier) from e
         raise RuntimeError(api_error_message(e)) from e
 
 
@@ -195,7 +203,7 @@ def database_attachments(
     detail = _database_detail(client, database_id)
     return [
         CatalogAttachment(connection_id=str(one.connection_id), alias=one.alias)
-        for one in getattr(detail, "attachments", None) or ()
+        for one in detail.attachments or ()
     ]
 
 
@@ -242,8 +250,9 @@ def attach_catalog(
     attached already, its existing attachment is returned, so re-running a provisioning
     step is a no-op instead of an error.
 
-    Raises ``KeyError`` when the workspace has no database with that id, and
-    ``RuntimeError`` when the attach is refused or reports success without landing.
+    Raises ``KeyError`` when the database or the connection does not exist — a 404 here
+    does not say which, so the message names both — and ``RuntimeError`` when the attach
+    is refused or reports success without landing.
     """
     identifier = _database_id(database_id)
     try:
@@ -252,6 +261,11 @@ def attach_catalog(
             AttachDatabaseCatalogRequest(connection_id=connection_id, alias=alias),
         )
     except ApiException as e:
+        if e.status == 404:
+            raise KeyError(
+                f"no instant database with id {identifier!r} in this workspace, or no "
+                f"connection {connection_id!r} registered in it."
+            ) from e
         if e.status == 409:
             existing = _attached_connection(client, identifier, connection_id)
             if existing is not None:
@@ -270,7 +284,8 @@ def attach_catalog(
     if landed is None:
         raise RuntimeError(
             f"attaching connection {connection_id!r} to database {identifier!r} reported "
-            "no error, but the database reports it is not attached."
+            "no error, but the database reports it is not attached. Pass confirm=False to "
+            "accept the call's own result instead of this read-back."
         )
     return landed
 

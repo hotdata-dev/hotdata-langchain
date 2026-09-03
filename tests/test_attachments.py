@@ -287,3 +287,48 @@ def test_detach_leaving_an_unrelated_attachment_in_place_succeeds(
     )
 
     detach_catalog(mock_client, managed_db.id, connection_id=CONNECTION)
+
+
+# --- the 404 contract, which attach and detach must state the same way ---------------
+
+
+def test_attach_translates_a_404_into_a_keyerror(
+    mock_client: MagicMock, managed_db: ManagedDatabase, attached: MagicMock
+) -> None:
+    """The attach fails before the read-back, so this path never reaches _database_detail."""
+    attached.return_value.attach_database_catalog.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+
+    with pytest.raises(KeyError) as excinfo:
+        attach_catalog(mock_client, "dbid000000000000000000000000x", connection_id=CONNECTION)
+
+    message = str(excinfo.value)
+    assert "no instant database" in message
+    assert CONNECTION in message
+
+
+def test_attach_and_detach_agree_on_which_error_a_404_is(
+    mock_client: MagicMock, managed_db: ManagedDatabase, attached: MagicMock
+) -> None:
+    """A caller wrapping both in one try block should not need two except clauses."""
+    attached.return_value.attach_database_catalog.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+    attached.return_value.detach_database_catalog.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+
+    for call in (attach_catalog, detach_catalog):
+        with pytest.raises(KeyError):
+            call(mock_client, managed_db.id, connection_id=CONNECTION)
+
+
+def test_the_unlanded_attach_message_names_the_way_out(
+    mock_client: MagicMock, managed_db: ManagedDatabase, attached: MagicMock
+) -> None:
+    """Error text in this module carries its own remedy."""
+    attached.return_value.get_database.return_value = detail_with(managed_db)
+
+    with pytest.raises(RuntimeError, match="confirm=False"):
+        attach_catalog(mock_client, managed_db.id, connection_id=CONNECTION)
