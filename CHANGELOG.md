@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`hotdata>=0.10.0`** (from `>=0.8.0`) and **`hotdata-framework>=0.14.1`** (from `>=0.13.0`).
+  The two move together: every framework release before 0.14.1 caps `hotdata` below 0.10, so
+  raising only the SDK floor would advertise a pair that cannot be installed side by side.
+  0.14.1 accepts `hotdata<0.12`. The SDK APIs that 0.11.0 retired (secrets, refresh, connection
+  types, connection health) are not used by this package, and the suite passes at the new floor.
+
 ## [0.16.0] - 2026-09-03
 
 ### Added
