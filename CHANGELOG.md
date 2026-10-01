@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-01
+
 ### Changed
 
 - **`hotdata>=0.10.0`** (from `>=0.8.0`) and **`hotdata-framework>=0.14.1`** (from `>=0.13.0`).
