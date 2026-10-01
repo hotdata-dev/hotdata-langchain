@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-  # 0.13.0 is where an `append` load became retryable; the tool exposes that mode.
-  "hotdata-framework>=0.13.0",
-  "hotdata>=0.8.0",
+  # 0.14.1 is the first framework release that accepts hotdata 0.10+ (earlier ones
+  # cap it below 0.10). Retryable `append` loads, which the tool exposes, date from 0.13.0.
+  "hotdata-framework>=0.14.1",
+  "hotdata>=0.10.0",
   "langchain-core>=1.0",
   "numpy>=1.26",
   "pyarrow>=15",
